@@ -1,4 +1,7 @@
-from io_.data_io import constantes_GAS
+from io_.loaders import load_constantes_gas
+from config import PATH_INPUTS
+
+constantes_GAS = load_constantes_gas(PATH_INPUTS)
 
 DENSIDAD_AIRE = 1.225
 CONVERSION_BARRILLES_KGD = 6.29 #Pasaje de KG/D a BBL/D

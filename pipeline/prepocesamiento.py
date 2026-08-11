@@ -1,8 +1,20 @@
 import pandas as pd
 import numpy as np
-from io_.data_io import flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos, matriz_inyecciones, coefs_inyeccion_area, premisas_areas
+from io_.loaders import load_flujos_directos, load_yacimientos, load_detalles_hubs, load_propiedades, load_plantas_yacimientos, load_matriz_inyecciones, load_coefs_inyeccion_area, load_premisas_areas
+from config import PATH_INPUTS
 from domain.normalizacion import *
 from domain.ctes_gas import COMPUESTOS
+
+
+flujos_directos = load_flujos_directos(PATH_INPUTS)
+yacimientos = load_yacimientos(PATH_INPUTS)
+detalles_hubs = load_detalles_hubs(PATH_INPUTS)
+propiedades = load_propiedades(PATH_INPUTS)
+plantas_yacimientos = load_plantas_yacimientos(PATH_INPUTS)
+matriz_inyecciones = load_matriz_inyecciones(PATH_INPUTS)
+coefs_inyeccion_area = load_coefs_inyeccion_area(PATH_INPUTS)
+premisas_areas = load_premisas_areas(PATH_INPUTS)
+
 
 flujos_directos = flujos_directos.fillna(0)
 yacimientos = yacimientos.fillna(0)

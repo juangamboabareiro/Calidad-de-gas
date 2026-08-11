@@ -7,7 +7,7 @@ from domain.ctes_gas import *
 from pipeline.prepocesamiento import *
 from config import CAPACIDAD, PERIODO_CONSIDERADO, FECHA_RANDOM, PATH_INPUTS, CAPACIDAD_MEGA
 from pipeline.inyeccion_std import calcular_inyeccion_std
-from io_.data_io import inyeccion_9300, coeficientes, retenidos_RTP
+from io_.loaders import load_inyeccion_9300, load_coeficientes, load_retenidos_rtp
 from pipeline.inyeccion_area import calcular_inyeccion_area, calcular_inyeccion
 from pipeline.yacimientos import calcular_inyeccion_yacimientos_areas
 from pipeline.detalles_hubs import calcular_inyeccion_detalles_hubs
@@ -19,6 +19,11 @@ from pipeline.plantas.TTY_TBX import modelar_TTY_TBX
 from pipeline.plantas.MEGA import modelar_MEGA
 from outputs.writers import guardar
 
+
+
+inyeccion_9300 = load_inyeccion_9300(PATH_INPUTS)
+coeficientes = load_coeficientes(PATH_INPUTS)
+retenidos_RTP = load_retenidos_rtp(PATH_INPUTS)
 
 # endregion
 

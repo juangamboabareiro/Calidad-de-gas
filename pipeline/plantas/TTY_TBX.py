@@ -1,12 +1,16 @@
 # import pandas as pd
 import pandas as pd
 import numpy as np
-from io_.data_io import matriz_inyecciones, retenidos_RTP
+from io_.loaders import load_matriz_inyecciones, load_retenidos_rtp
 from domain.normalizacion import normalizar
 from domain.ctes_gas import PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, BUTANOS, PROPANO, GASOLINA, ETANO, COMPUESTOS, CONVERSION_BARRILLES_KGD
-from config import CAPACIDAD, FECHA_RANDOM, PERIODO_CONSIDERADO, CAPACIDAD_TTY_TBX, CAPACIDAD_ADICIONAL_TBX, CAPACIDAD_BASE_CONVERTIBLE_TBX
+from config import CAPACIDAD, FECHA_RANDOM, PERIODO_CONSIDERADO, CAPACIDAD_TTY_TBX, CAPACIDAD_ADICIONAL_TBX, CAPACIDAD_BASE_CONVERTIBLE_TBX, PATH_INPUTS
 from domain.propiedades_gas import calcular_energia_total, calcular_propiedades_gas, calcular_retenidos
 from pipeline.plantas.planta_template import io_plantas
+
+
+matriz_inyecciones = load_matriz_inyecciones(PATH_INPUTS)
+retenidos_rtp = load_retenidos_rtp(PATH_INPUTS)
 
 
 # tbx = tabla_tty_tbx['Volumen inyectado']/tabla_tty_tbx['Volumen inyectado'].sum() * FLUJO_SIN_BYPASS_TBX 
