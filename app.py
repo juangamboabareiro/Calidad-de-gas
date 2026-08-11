@@ -118,16 +118,16 @@ def ejecutar_pipeline(path: str, periodo: pd.Timestamp, capacidad: float) -> dic
         status.update(label="Preprocesamiento listo ✅")
 
     with st.status("Corriendo inyección...", expanded=False) as status:
-        inyeccion_std = inyeccion_std.calcular_inyeccion_std(inyeccion_9300, coeficientes)
-        inyeccion_df, inyeccion_area = inyeccion_area.calcular_inyeccion_area(
-            inyeccion_std, plantas_yacimientos, matriz_inyecciones
+        inyeccion_std_df = inyeccion_std.calcular_inyeccion_std(inyeccion_9300, coeficientes)
+        inyeccion_df, inyeccion_area_df = inyeccion_area.calcular_inyeccion_area(
+            inyeccion_std_df, plantas_yacimientos, matriz_inyecciones
         )
         status.update(label="Inyección lista ✅")
 
     with st.status("Yacimientos y hubs...", expanded=False) as status:
         yacimientos_areas, inyeccion_yacimientos_areas = (
             yacimientos.calcular_yacimientos_areas(
-                yacimientos_df, plantas_yacimientos, inyeccion_area
+                yacimientos_df, plantas_yacimientos, inyeccion_area_df
             )
         )
         detalles_hubs_areas = detalles_hubs.calcular_detalles_hubs_areas(
