@@ -109,7 +109,7 @@ def ejecutar_pipeline(path: str, periodo: pd.Timestamp, capacidad: float) -> dic
         status.update(label="Inputs cargados ✅")
 
     with st.status("Preprocesando...", expanded=False) as status:
-        flujos_directos_df, yacimientos_df, detalles_hubs_df = (
+        flujos_directos_df, yacimientos_df, detalles_hubs_df, propiedades, plantas_yacimientos, matriz_inyecciones, coefs_inyeccion_area, premisas_areas = (
             preprocesamiento.preprocesar_inputs(
                 flujos_directos_raw, yacimientos_raw, detalles_hubs_raw,
                 propiedades, plantas_yacimientos,
