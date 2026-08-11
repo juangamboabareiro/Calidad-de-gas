@@ -1,0 +1,13 @@
+import pandas as pd
+from pathlib import Path
+
+
+PATH_INPUTS =  "datos/inputs.xlsx" 
+PERIODO_CONSIDERADO = pd.Timestamp('01-2025')
+FECHA_RANDOM = pd.Timestamp('01-2025') 
+CAPACIDAD = 10
+CAPACIDAD_TTY_TBX = 0
+CAPACIDAD_BASE_CONVERTIBLE_TBX = 13.2
+CAPACIDAD_ADICIONAL_TBX = 20.8
+CAPACIDAD_MEGA = 37
+GUARDAR_CSVS = True
