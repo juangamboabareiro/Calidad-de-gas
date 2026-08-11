@@ -26,14 +26,15 @@ import config
 from io_ import loaders
 from pipeline import (
     preprocesamiento,
-    inyeccion,
+    inyeccion_std,
+    inyeccion_area,
     yacimientos,
     detalles_hubs,
     flujos_directos,
     tabla_total,
-    modelado_plantas,
 )
-from domain import retenidos as dom_retenidos
+from pipeline.plantas.planta_template import io_plantas as modelado_plantas
+from domain.propiedades_gas import retenidos as dom_retenidos
 
 st.set_page_config(page_title="Balance de Gas", layout="wide")
 st.title("Balance de Gas — Pipeline")
@@ -117,8 +118,8 @@ def ejecutar_pipeline(path: str, periodo: pd.Timestamp, capacidad: float) -> dic
         status.update(label="Preprocesamiento listo ✅")
 
     with st.status("Corriendo inyección...", expanded=False) as status:
-        inyeccion_std = inyeccion.calcular_inyeccion_std(inyeccion_9300, coeficientes)
-        inyeccion_df, inyeccion_area = inyeccion.calcular_inyeccion_area(
+        inyeccion_std = inyeccion_std.calcular_inyeccion_std(inyeccion_9300, coeficientes)
+        inyeccion_df, inyeccion_area = inyeccion_area.calcular_inyeccion_area(
             inyeccion_std, plantas_yacimientos, matriz_inyecciones
         )
         status.update(label="Inyección lista ✅")

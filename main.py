@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 from domain.ctes_gas import *
-from pipeline.prepocesamiento import *
+from pipeline.preprocesamiento import *
 from config import CAPACIDAD, PERIODO_CONSIDERADO, FECHA_RANDOM, PATH_INPUTS, CAPACIDAD_MEGA
 from pipeline.inyeccion_std import calcular_inyeccion_std
 from io_.loaders import load_inyeccion_9300, load_coeficientes, load_retenidos_rtp
