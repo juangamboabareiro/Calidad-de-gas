@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 from domain.ctes_gas import *
-from pipeline.preprocesamiento import *
+from pipeline.preprocesamiento import preprocesar_inputs
 from config import CAPACIDAD, PERIODO_CONSIDERADO, FECHA_RANDOM, PATH_INPUTS, CAPACIDAD_MEGA
 from pipeline.inyeccion_std import calcular_inyeccion_std
 from io_.loaders import load_inyeccion_9300, load_coeficientes, load_retenidos_rtp
@@ -18,14 +18,38 @@ from pipeline.plantas.TTY_DP import modelar_TTY_DP
 from pipeline.plantas.TTY_TBX import modelar_TTY_TBX
 from pipeline.plantas.MEGA import modelar_MEGA
 from outputs.writers import guardar
+from io_.loaders import load_flujos_directos, load_yacimientos, load_detalles_hubs, load_propiedades, load_plantas_yacimientos, load_matriz_inyecciones, load_premisas_areas, load_coefs_inyeccion_area, load_retenidos_rtp
 
 
+
+
+# endregion
+
+
+
+# region inputs
 
 inyeccion_9300 = load_inyeccion_9300(PATH_INPUTS)
 coeficientes = load_coeficientes(PATH_INPUTS)
 retenidos_RTP = load_retenidos_rtp(PATH_INPUTS)
 
+flujos_directos = load_flujos_directos(PATH_INPUTS)
+yacimientos = load_yacimientos(PATH_INPUTS)
+detalles_hubs = load_detalles_hubs(PATH_INPUTS)
+propiedades = load_propiedades(PATH_INPUTS)
+plantas_yacimientos = load_plantas_yacimientos(PATH_INPUTS)
+
+
+#endregion
+
+
+
+# region preprocesamiento de datos
+
+flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos, matriz_inyecciones, coefs_inyeccion_area, premisas_areas = preprocesar_inputs(flujos_directos=flujos_directos, yacimientos=yacimientos, detalles_hubs=detalles_hubs, propiedades=propiedades, plantas_yacimientos=plantas_yacimientos)
+
 # endregion
+
 
 
 
