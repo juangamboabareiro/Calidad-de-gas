@@ -111,6 +111,183 @@ def _mostrar_tabla(nombre: str, df: pd.DataFrame, key_prefix: str):
     _boton_descarga(df, nombre.replace(" ", "_"), key=f"{key_prefix}_{nombre}")
 
 
+def _fmt(valor, decimales=1, unidad=""):
+    """Formatea un número o devuelve '—' si todavía no hay dato cargado
+    (placeholder mientras se programan los valores reales)."""
+    if valor is None:
+        return "—"
+    try:
+        return f"{float(valor):,.{decimales}f}{unidad}"
+    except (TypeError, ValueError):
+        return str(valor)
+
+
+def _svg_esquema_planta(
+    nombre_planta: str,
+    color_planta: str = "#5DADE2",
+    flujo_in=None,
+    flujo_in_eq=None,
+    flujo_out=None,
+    flujo_out_eq=None,
+    bypass=None,
+    bypass_eq=None,
+    rtp=None,
+    liq_total=None,
+    etano=None,
+    propano=None,
+    butanos=None,
+    gasolina=None,
+    ratio_in_out=None,
+) -> str:
+    """Genera el esquema tipo diagrama de bloques (IN / OUT / ByPass / LGN /
+    Ratio) de una planta, en el mismo estilo que la lámina de referencia.
+
+    TODO (a programar por el usuario): reemplazar los `None` por los valores
+    reales que salgan del pipeline para cada planta, por ejemplo:
+        flujo_in       -> datos["tabla"]["Volumen_inyectado"].sum() / 1e6 (o la unidad que corresponda)
+        flujo_in_eq    -> volumen equivalente de gas (a definir)
+        flujo_out      -> gas residual OUT, en volumen físico
+        flujo_out_eq   -> gas residual OUT, en volumen equivalente
+        bypass / bypass_eq -> volumen bypaseado (solo aplica a TTY-DP / TTY-TBX)
+        rtp            -> retenidos totales de planta en MMm3eq/d
+        liq_total      -> datos["retenidos_vol"] sumado (etano+propano+butanos+gasolina)
+        etano/propano/butanos/gasolina -> filas de datos["retenidos_vol"]
+        ratio_in_out   -> flujo_in / flujo_out_eq (o la relación que definan)
+    """
+    return f"""
+    <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg"
+         style="width:100%; max-width:700px; font-family:Arial, sans-serif;">
+
+      <!-- Composición de líquidos (arriba a la izquierda) -->
+      <text x="230" y="25" font-size="15" font-weight="bold" fill="#1a1a1a">Liq. total</text>
+      <text x="330" y="25" font-size="15" font-weight="bold" fill="#1a1a1a">{_fmt(liq_total)}</text>
+
+      <text x="255" y="48" font-size="13" fill="#1a1a1a">Etano</text>
+      <text x="330" y="48" font-size="13" fill="#1a1a1a">{_fmt(etano)} tn/d</text>
+
+      <text x="255" y="68" font-size="13" fill="#1a1a1a">Propano</text>
+      <text x="330" y="68" font-size="13" fill="#1a1a1a">{_fmt(propano)} tn/d</text>
+
+      <text x="255" y="88" font-size="13" fill="#1a1a1a">Butanos</text>
+      <text x="330" y="88" font-size="13" fill="#1a1a1a">{_fmt(butanos)} tn/d</text>
+
+      <text x="255" y="108" font-size="13" fill="#1a1a1a">Gasolina</text>
+      <text x="330" y="108" font-size="13" fill="#1a1a1a">{_fmt(gasolina)} tn/d</text>
+
+      <!-- RTP (arriba a la derecha) -->
+      <text x="490" y="48" font-size="13" font-weight="bold" fill="#1a1a1a">
+        RTP = {_fmt(rtp)} MMm3eq./d
+      </text>
+
+      <!-- Flecha vertical liq. total hacia arriba de la planta -->
+      <line x1="235" y1="120" x2="235" y2="30" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <!-- Caja de la planta -->
+      <rect x="190" y="120" width="260" height="120" fill="{color_planta}" stroke="#1a1a1a" stroke-width="1.5"/>
+      <text x="320" y="185" font-size="16" font-weight="bold" text-anchor="middle" fill="#0b2545">
+        {nombre_planta.upper()}
+      </text>
+
+      <!-- Flecha IN -->
+      <line x1="20" y1="150" x2="188" y2="150" stroke="#1a1a1a" stroke-width="4" marker-end="url(#arrow)"/>
+      <text x="20" y="140" font-size="13" font-weight="bold" fill="#1a1a1a">{_fmt(flujo_in)} MMm3/d</text>
+      <text x="20" y="168" font-size="12" fill="#2c3e50">{_fmt(flujo_in_eq)} MMm3eq/d</text>
+
+      <!-- Flecha OUT -->
+      <line x1="452" y1="150" x2="620" y2="150" stroke="#1a1a1a" stroke-width="4" marker-end="url(#arrow)"/>
+      <text x="500" y="140" font-size="13" font-weight="bold" fill="#1a1a1a">{_fmt(flujo_out)} MMm3/d</text>
+      <text x="500" y="168" font-size="12" fill="#2c3e50">{_fmt(flujo_out_eq)} MMm3eq/d</text>
+
+      <!-- ByPass -->
+      <text x="10" y="255" font-size="12" font-weight="bold" fill="#1a1a1a">ByPass</text>
+      <text x="70" y="278" font-size="12" font-weight="bold" fill="#1a1a1a">{_fmt(bypass)} MMm3/d</text>
+      <text x="70" y="296" font-size="12" fill="#2c3e50">{_fmt(bypass_eq)} MMm3eq/d</text>
+
+      <line x1="360" y1="255" x2="70" y2="255" stroke="#1a1a1a" stroke-width="2"
+            stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+      <line x1="20" y1="255" x2="20" y2="310" stroke="#1a1a1a" stroke-width="2" stroke-dasharray="4,4"/>
+      <line x1="20" y1="310" x2="620" y2="310" stroke="#1a1a1a" stroke-width="2"
+            stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+      <text x="260" y="325" font-size="12" fill="#2c3e50">{_fmt(bypass_eq)} MMm3eq/d</text>
+
+      <!-- Ratio IN/OUT -->
+      <rect x="230" y="345" width="240" height="28" fill="white" stroke="#1a1a1a" stroke-width="1.2"/>
+      <text x="250" y="364" font-size="13" fill="#1a1a1a">Ratio IN / OUT</text>
+      <text x="380" y="364" font-size="13" font-weight="bold" fill="#1a1a1a">{_fmt(ratio_in_out, 3)}</text>
+      <text x="440" y="364" font-size="11" fill="#2c3e50">m3std/m3eq</text>
+
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#1a1a1a"/>
+        </marker>
+      </defs>
+    </svg>
+    """
+
+
+def _mostrar_esquema_planta(nombre_planta: str, color_planta: str, esquema):
+    """Renderiza el esquema de bloques de la planta. Si `esquema` es None o
+    está vacío se muestra igual con placeholders ('—'), como plantilla."""
+    esquema = esquema or {}
+    svg = _svg_esquema_planta(nombre_planta, color_planta=color_planta, **esquema)
+    st.markdown(svg, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Grafo de red: gasoductos -> plantas (estilo grafo con Graphviz)
+# ---------------------------------------------------------------------------
+
+def _dot_red_gasoductos(edges: pd.DataFrame) -> str:
+    """Construye el DOT (graphviz) de la red Área/Gasoducto -> Planta.
+
+    `edges` espera columnas: ['origen', 'destino', 'valor'] (valor opcional,
+    se usa solo como etiqueta del arco).
+
+    TODO (a programar por el usuario): armar este DataFrame a partir de los
+    datos reales del pipeline, por ejemplo agrupando:
+        matriz_inyecciones (Gasoducto, Area) + tabla_total_* (Area, Volumen_inyectado)
+    agrupado por Gasoducto/Planta destino, algo como:
+
+        edges = (
+            tabla_total_flujos_directos
+            .groupby(["Gasoducto"])["Volumen_inyectado"].sum()
+            .reset_index()
+            .rename(columns={"Gasoducto": "origen"})
+        )
+        edges["destino"] = "NOMBRE_PLANTA"   # según a qué planta corresponda
+        edges["valor"] = edges["Volumen_inyectado"]
+    """
+    lineas = ["digraph G {", '  rankdir="LR";', '  node [fontname="Arial"];']
+
+    origenes = edges["origen"].unique() if not edges.empty else []
+    destinos = edges["destino"].unique() if not edges.empty else []
+
+    for origen in origenes:
+        lineas.append(f'  "{origen}" [shape=ellipse, style=filled, fillcolor="#AED6F1"];')
+    for destino in destinos:
+        lineas.append(f'  "{destino}" [shape=box, style=filled, fillcolor="#5DADE2"];')
+
+    for _, fila in edges.iterrows():
+        etiqueta = f' [label="{_fmt(fila.get("valor"))}"]' if "valor" in fila else ""
+        lineas.append(f'  "{fila["origen"]}" -> "{fila["destino"]}"{etiqueta};')
+
+    lineas.append("}")
+    return "\n".join(lineas)
+
+
+def _mostrar_red_gasoductos(edges):
+    """Muestra el grafo de la red de gasoductos hacia las plantas. Si no
+    hay datos todavía, se muestra un grafo vacío como plantilla."""
+    if edges is None or edges.empty:
+        st.info(
+            "Todavía no hay datos cargados para la red de gasoductos. "
+            "Este es un placeholder — ver TODO en `_dot_red_gasoductos` "
+            "para armar el DataFrame `edges` con datos reales."
+        )
+        edges = pd.DataFrame(columns=["origen", "destino", "valor"])
+    st.graphviz_chart(_dot_red_gasoductos(edges), use_container_width=True)
+
+
 # ---------------------------------------------------------------------------
 # Recarga en caliente de módulos sensibles a config.py (ver nota al inicio)
 # ---------------------------------------------------------------------------
@@ -350,6 +527,25 @@ def ejecutar_pipeline(path, periodo, fecha_random, capacidad, capacidad_mega, gu
                 "gas_residual_out": gas_residual_dp,
                 "retenidos_vol": ret_vol_dp,
                 "capacidad": capacidad,
+                "color": "#7FB3D5",
+                # TODO: completar con los valores reales para el esquema de
+                # bloques (ver docstring de _svg_esquema_planta). Ejemplo:
+                # "esquema": {
+                #     "flujo_in": tabla_tty_dp["Volumen_inyectado"].sum(),
+                #     "flujo_in_eq": None,
+                #     "flujo_out": None,
+                #     "flujo_out_eq": None,
+                #     "bypass": None,
+                #     "bypass_eq": None,
+                #     "rtp": None,
+                #     "liq_total": None,
+                #     "etano": None,
+                #     "propano": None,
+                #     "butanos": None,
+                #     "gasolina": None,
+                #     "ratio_in_out": None,
+                # },
+                "esquema": None,
             },
             "TTY - TBX": {
                 "tabla": tabla_tty_tbx,
@@ -357,6 +553,8 @@ def ejecutar_pipeline(path, periodo, fecha_random, capacidad, capacidad_mega, gu
                 "gas_residual_out": gas_residual_tbx,
                 "retenidos_vol": ret_vol_tbx,
                 "capacidad": capacidad,
+                "color": "#5DADE2",
+                "esquema": None,  # TODO: idem TTY - Dew Point
             },
             "MEGA": {
                 "tabla": tabla_mega,
@@ -364,8 +562,14 @@ def ejecutar_pipeline(path, periodo, fecha_random, capacidad, capacidad_mega, gu
                 "gas_residual_out": gas_residual_mega,
                 "retenidos_vol": ret_vol_mega,
                 "capacidad": capacidad_mega,
+                "color": "#2E86C1",
+                "esquema": None,  # TODO: idem TTY - Dew Point
             },
         },
+        # TODO: reemplazar por el DataFrame real de aristas (origen, destino,
+        # valor) para la red de gasoductos -> plantas. Ver docstring de
+        # _dot_red_gasoductos más arriba.
+        "red_gasoductos": pd.DataFrame(columns=["origen", "destino", "valor"]),
     }
 
 
@@ -391,8 +595,9 @@ else:
     tablas = resultados["tablas"]
     plantas = resultados["plantas"]
 
-    tab_resumen, tab_tablas, tab_dp, tab_tbx, tab_mega = st.tabs(
-        ["📊 Resumen", "📋 Tablas totales", "TTY - Dew Point", "TTY - TBX", "MEGA"]
+    tab_resumen, tab_tablas, tab_red, tab_dp, tab_tbx, tab_mega = st.tabs(
+        ["📊 Resumen", "📋 Tablas totales", "🕸️ Red de Gasoductos",
+         "TTY - Dew Point", "TTY - TBX", "MEGA"]
     )
 
     with tab_resumen:
@@ -407,6 +612,14 @@ else:
             _mostrar_tabla(nombre, df, key_prefix="tablas")
             st.divider()
 
+    with tab_red:
+        st.subheader("Red de gasoductos hacia las plantas")
+        st.caption(
+            "Vista de grafo: qué gasoducto/área alimenta a qué planta. "
+            "Placeholder — falta cargar los datos reales (ver TODO en el código)."
+        )
+        _mostrar_red_gasoductos(resultados.get("red_gasoductos"))
+
     def _mostrar_planta(tab, nombre_planta, datos):
         with tab:
             _kpi_capacidad(
@@ -414,6 +627,10 @@ else:
                 float(datos["tabla"]["Volumen_inyectado"].sum()) if "Volumen_inyectado" in datos["tabla"] else 0.0,
                 datos["capacidad"],
             )
+            st.divider()
+
+            st.markdown("**Esquema de la planta**")
+            _mostrar_esquema_planta(nombre_planta, datos.get("color", "#5DADE2"), datos.get("esquema"))
             st.divider()
 
             with st.expander("Ver tabla de detalle de la planta"):
