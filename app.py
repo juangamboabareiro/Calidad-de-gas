@@ -34,7 +34,7 @@ from pipeline import (
     tabla_total,
 )
 from pipeline.plantas.planta_template import io_plantas as modelado_plantas
-from domain.propiedades_gas import retenidos as dom_retenidos
+from domain.propiedades_gas import calcular_retenidos as dom_retenidos
 
 st.set_page_config(page_title="Balance de Gas", layout="wide")
 st.title("Balance de Gas — Pipeline")
