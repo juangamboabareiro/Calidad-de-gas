@@ -91,6 +91,8 @@ tabla_mega, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = modelar_M
 
 
 
+#print(tabla_total_yacimientos[['Area', 'Gasoducto', 'Volumen_inyectado']])
+
 #volumen_dp = max(min(tabla_tty_dp['Volumen_inyectado']/tabla_tty_dp['Volumen_inyectado'].values.sum()*CAPACIDAD, tabla_tty_tbx['Volumen_inyectado'] - (tabla_tty_tbx['Volumen_inyectado']/tabla_tty_tbx['Volumen_inyectado'].values.sum() * CAPACIDAD)),0)
 
 

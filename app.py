@@ -584,7 +584,7 @@ def ejecutar_pipeline(path, periodo, fecha_random, capacidad, capacidad_mega, gu
         # TODO: reemplazar por el DataFrame real de aristas (origen, destino,
         # valor) para la red de gasoductos -> plantas. Ver docstring de
         # _dot_red_gasoductos más arriba.
-        "red_gasoductos": pd.DataFrame(columns=["origen", "destino", "valor"]),
+        "red_gasoductos": tabla_total_yacimientos[['Area', 'Gasoducto', 'Volumen_inyectado']],
     }
 
 
