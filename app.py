@@ -545,7 +545,22 @@ def ejecutar_pipeline(path, periodo, fecha_random, capacidad, capacidad_mega, gu
                 #     "gasolina": None,
                 #     "ratio_in_out": None,
                 # },
-                "esquema": None,
+                #"esquema": None,
+                "esquema": {
+                    "flujo_in" : tabla_tty_dp["Volumen_inyectado"].values.sum(),
+                    "flujo_in_eq" : tabla_tty_dp["Volumen_inyectado"].values.sum()/9300, 
+                    "flujo_out" : gas_residual_dp.values.sum(),
+                    "flujo_out_eq" : gas_residual_dp.values.sum()/9300,
+                    "bypass" : 0,
+                    "bypass_eq" : 0,
+                    "rtp" : 0,
+                    "liq_total" : 0,
+                    "etano" : 0,
+                    "butanos" : 0,
+                    "gasolina" : 0,
+                    "ratio_in_out" :0,
+
+                }
             },
             "TTY - TBX": {
                 "tabla": tabla_tty_tbx,
