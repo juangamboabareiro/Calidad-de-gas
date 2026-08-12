@@ -90,8 +90,9 @@ tabla_tty_tbx, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = modela
 tabla_mega, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = modelar_MEGA(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_MEGA = retenidos_MEGA)
 
 
+red_gasoductos = pd.DataFrame(columns=["origen", "destino", "valor"])
 
-#print(tabla_total_yacimientos[['Area', 'Gasoducto', 'Volumen_inyectado']])
+red_gasoductos[["origen", "destino", "valor"]] = tabla_total_yacimientos[['Area', 'Gasoducto', 'Volumen_inyectado']]
 
 #volumen_dp = max(min(tabla_tty_dp['Volumen_inyectado']/tabla_tty_dp['Volumen_inyectado'].values.sum()*CAPACIDAD, tabla_tty_tbx['Volumen_inyectado'] - (tabla_tty_tbx['Volumen_inyectado']/tabla_tty_tbx['Volumen_inyectado'].values.sum() * CAPACIDAD)),0)
 

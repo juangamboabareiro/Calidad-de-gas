@@ -54,6 +54,7 @@ from pipeline.tabla_total import (
     calcular_tabla_total_detalles_hubs,
 )
 from outputs.writers import guardar
+from main import red_gasoductos
 
 st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
 
@@ -584,7 +585,7 @@ def ejecutar_pipeline(path, periodo, fecha_random, capacidad, capacidad_mega, gu
         # TODO: reemplazar por el DataFrame real de aristas (origen, destino,
         # valor) para la red de gasoductos -> plantas. Ver docstring de
         # _dot_red_gasoductos más arriba.
-        "red_gasoductos": tabla_total_yacimientos[['Area', 'Gasoducto', 'Volumen_inyectado']],
+        "red_gasoductos": red_gasoductos,
     }
 
 
