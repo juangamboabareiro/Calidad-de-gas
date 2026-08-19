@@ -1,0 +1,33 @@
+Inyección,Volumen,Area,Gasoducto
+Secundaria,2546.505717617134,vmn,TTY
+Secundaria,2010.5833333333335,vms,TTY
+Secundaria,-197.99905476038154,gpaamega,MEGA
+Secundaria,-4493.995550611791,pampasch,MEGA
+Secundaria,-7996.468151129589,totalapeasr,MEGA
+Secundaria,-1220.1465643781455,ypfrdm,MEGA
+Secundaria,2.7,tbxelporton,MEGA
+Secundaria,1797.9977753058954,pampasch,CO (Troncal)
+Secundaria,3000.0,totalapeasr,CO (Troncal)
+Cuaternaria,6329.106875927668,cotroncal,CO (Troncal)
+Secundaria,-232.66666666666666,pampaembm,CO (Paralelo)
+Terciaria,5500.0,tty,CO (Paralelo)
+Terciaria,17500.0,mega,CO (Paralelo)
+Cuaternaria,26917.333333333332,coparalelo,CO (Paralelo)
+Cuaternaria,2387.9658610018278,neui,NEUI
+Secundaria,1797.9977753058954,pampasch,NEUII
+Secundaria,-465.3333333333333,pampaembm,NEUII
+Secundaria,3500.531848870411,totalapeasr,NEUII
+Terciaria,11000.0,tty,NEUII
+Terciaria,-28669.639315781682,mega,NEUII
+Cuaternaria,-6345.833924316936,neuii,NEUII
+Secundaria,1500.0,totalapeasr,GPM
+Terciaria,-11942.910949049532,tty,GPM
+Cuaternaria,-29483.160949049532,gpm,GPM
+Secundaria,2800.0000000000005,ypfrdm,BdP
+Cuaternaria,1499.0,neuii,BdP
+Cuaternaria,3401.0000000000005,bdp,BdP
+Terciaria,71.78448422373485,vmliq,TTY-PC
+Cuaternaria,71.78448422373485,ttypc,TTY-PC
+Secundaria,300.0,gpaachile,Otros
+Secundaria,0.30000000000000004,tbxelporton,Otros
+Cuaternaria,9278.155391642198,otros,Otros

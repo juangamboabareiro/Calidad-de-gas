@@ -4,29 +4,22 @@ import numpy as np
 from io_.loaders import load_matriz_inyecciones, load_retenidos_rtp
 from domain.normalizacion import normalizar
 from domain.ctes_gas import PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, BUTANOS, PROPANO, GASOLINA, ETANO, COMPUESTOS, CONVERSION_BARRILLES_KGD
-from config import CAPACIDAD, FECHA_RANDOM, PERIODO_CONSIDERADO, CAPACIDAD_TTY_TBX, CAPACIDAD_ADICIONAL_TBX, CAPACIDAD_BASE_CONVERTIBLE_TBX, PATH_INPUTS
+import config
 from domain.propiedades_gas import calcular_energia_total, calcular_propiedades_gas, calcular_retenidos
 from pipeline.plantas.planta_template import io_plantas
 
 
-matriz_inyecciones = load_matriz_inyecciones(PATH_INPUTS)
-retenidos_rtp = load_retenidos_rtp(PATH_INPUTS)
-
-
-# tbx = tabla_tty_tbx['Volumen inyectado']/tabla_tty_tbx['Volumen inyectado'].sum() * FLUJO_SIN_BYPASS_TBX 
-
-# dp = max(min(tabla_tty_tbx['Volumen inyectado']/tabla_tty_tbx['Volumen inyectado'].sum() * CAPACIDAD, tabla_tty_tbx['Volumen inyectado'] - tbx), 0)
-
-# FLUJO_SIN_BYPASS = min(tabla_tty_tbx['Volumen inyectado'].sum(), dp.sum())
-
-# BYPASS = min(tabla_tty_tbx['Volumen inyectado'].sum() - )
+matriz_inyecciones = load_matriz_inyecciones(config.PATH_INPUTS)
+retenidos_rtp = load_retenidos_rtp(config.PATH_INPUTS)
 
 
 
 
 
 
-def correccion_TTY_TBX(retenidos_vol, PERIODO_CONSIDERADO, FECHA_RANDOM, CAPACIDAD, tabla_tty_tbx, propiedades, gas_rico_IN, retenidos):
+
+
+def correccion_TTY_TBX(retenidos_vol, PERIODO_CONSIDERADO, FECHA, CAPACIDAD, tabla_tty_tbx, propiedades, gas_rico_IN, retenidos):
 
 
     retenidos_vol = retenidos_vol/propiedades['Densidad Liquido [kg/m3]']
@@ -44,9 +37,6 @@ def correccion_TTY_TBX(retenidos_vol, PERIODO_CONSIDERADO, FECHA_RANDOM, CAPACID
     correccion_etano = etano_retenido
 
 
-    AUX  = 90000 * CAPACIDAD_TTY_TBX / (CAPACIDAD_BASE_CONVERTIBLE_TBX + CAPACIDAD_ADICIONAL_TBX)
-
-
     ############################
 
     #BUTANOS CREO HAY ALGO RARO PORQUE NO SE SI ESTOY USANDO LA SUMA O LOS VALUES EN VERDAD
@@ -54,7 +44,7 @@ def correccion_TTY_TBX(retenidos_vol, PERIODO_CONSIDERADO, FECHA_RANDOM, CAPACID
     ############################
 
 
-    correccion_butanos = butanos_retenido.values if retenidos_vol.values.sum() <= AUX else butanos_retenido.values * AUX/retenidos_vol.values.sum()
+    correccion_butanos = butanos_retenido.values if retenidos_vol.values.sum() < AUX else butanos_retenido.values * AUX/retenidos_vol.values.sum()
 
     correccion_propano = AUX - correccion_etano - correccion_butanos.values - correccion_gasolina if propano_retenido.values > 1 else 0
 
@@ -81,9 +71,9 @@ def modelar_TTY_TBX(calcular_retenidos, tabla_total_flujos_directos, propiedades
 
     tabla_tty_tbx, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_planta=retenidos_TTY_TBX,)
 
-    if tabla_tty_tbx['Volumen_inyectado'].sum() > CAPACIDAD:
+    if tabla_tty_tbx['Volumen_inyectado'].sum() > config.CAPACIDAD_TTY_TBX:
 
-        correcciones, coef_corr_butanos, coef_corr_propano = correccion_TTY_TBX(tabla_tty_tbx=tabla_tty_tbx, retenidos_vol=retenidos_vol, PERIODO_CONSIDERADO=PERIODO_CONSIDERADO, FECHA_RANDOM=FECHA_RANDOM, propiedades=propiedades, CAPACIDAD=CAPACIDAD, gas_rico_IN=gas_rico_IN, retenidos=retenidos)
+        correcciones, coef_corr_butanos, coef_corr_propano = correccion_TTY_TBX(tabla_tty_tbx=tabla_tty_tbx, retenidos_vol=retenidos_vol, PERIODO_CONSIDERADO=config.PERIODO_CONSIDERADO, FECHA = config.FECHA_PM_TTY_TBX, propiedades=propiedades, CAPACIDAD=config.CAPACIDAD, gas_rico_IN=gas_rico_IN, retenidos=retenidos)
 
         new_retenidos = retenidos_TTY_TBX.T
 

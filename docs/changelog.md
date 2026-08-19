@@ -197,3 +197,8 @@ Definir de manera aprox los esquemas grales como inputs arq flujo y dudas a cons
 ## 07/8/26
 - Tengo ya digamos version final 1.0 de planta template que va para cualquier planta y ya estarian terminadas las TTY solo hay que revisar ---> BUTANOS CREO HAY ALGO RARO PORQUE NO SE SI ESTOY USANDO LA SUMA O LOS VALUES EN VERDAD
 - Quedaria MEGA y listo. DSP tema revisar unidades, replantear modelos, documentar y capa frontend aunque yo arrancaria con revisar y frontend.
+
+## 13/8/26
+- Estoy finalizando el modelado de las plantas TTY, para la logica de las mismas como hay parametros que deben ser editables y ejecutables. Ejemplo: Ampliaciones, periodos de mantenimiento etc voy a considerar la planta como una unidad funcional y los parametros alterables seran llamados aparte. Ejemplo: TTY_TBX se pondra en marcha y luego se amplia, la funcion a generar para TTY solo considera una capacidad total que dsp sera alterada con una funcion auxiliar AMPLIAR_PLANTA que modificara el input de la funcion MODELAR_TTY
+- Tengo que agregar el volumen y las cromas de las desviaciones a mega y tty_dp
+- Bueno listo tengo que ver como resuelto el tema de la derivacion nada mas para agregar las cromas y el volumen

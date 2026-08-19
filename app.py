@@ -56,6 +56,7 @@ from pipeline.tabla_total import (
 from outputs.writers import guardar
 from main import red_gasoductos
 
+
 st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
 
 
