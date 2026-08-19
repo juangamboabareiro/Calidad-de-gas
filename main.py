@@ -49,7 +49,8 @@ flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos, m
 # endregion
 
 
-guardar(flujos_directos, 'pre_flujos_directos.csv')
+
+# region tablas totales
 
 inyeccion_std = calcular_inyeccion_std(inyeccion_9300, coeficientes)
 inyeccion = calcular_inyeccion(inyeccion_std, plantas_yacimientos)
@@ -58,8 +59,6 @@ inyeccion_area = calcular_inyeccion_area(inyeccion, matriz_inyecciones)
 inyeccion_yacimientos_areas = calcular_inyeccion_yacimientos_areas(yacimientos, plantas_yacimientos, inyeccion_area)
 inyeccion_detalles_hubs = calcular_inyeccion_detalles_hubs(detalles_hubs, plantas_yacimientos)
 inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(flujos_directos, matriz_inyecciones)
-
-guardar(inyeccion_flujos_directos, 'inyeccion_flujos_directos.csv')
 
 tabla_total_yacimientos = calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area, premisas_areas, config.PERIODO_CONSIDERADO, COMPUESTOS)
 tabla_total_flujos_directos = calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyeccion_area, premisas_areas, config.PERIODO_CONSIDERADO, COMPUESTOS)
@@ -75,55 +74,103 @@ guardar(tabla_total_yacimientos, 'TBL_TTL_YCS.csv')
 guardar(tabla_total_flujos_directos, 'TBL_TTL_DTOS.csv')
 guardar(tabla_total_detalles_hubs, 'TBL_TTL_DH.csv')
 
+# endregion
 
+
+
+# region modelado de plantas + derivaciones
 
 retenidos_TTY_DP = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'Dew point']
 retenidos_TTY_TBX = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'TBX']
 retenidos_MEGA = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'TBX MEGA']
 
 
+# La topologia de derivaciones es una CADENA sin ciclos:
+#
+#     TTY_TBX  --derivacion-->  TTY_DP  --derivacion-->  MEGA
+#
+# Por eso alcanza con modelar en ese orden, una sola pasada: cuando se modela
+# una planta, la derivacion que recibe ya esta calculada. No hace falta iterar
+# ni re-modelar nada. La derivacion se pasa a modelar_* y se inyecta como fila
+# de input DENTRO de io_plantas (antes de Volumen_relativo), asi el gas derivado
+# entra en la mezcla que forma gas_rico_IN.
+#
+# NOTA sobre el codigo anterior: se modelaba primero, se hacia
+# tabla.loc[len(tabla)] = {...} sobre la tabla devuelta, y despues se volvia a
+# llamar a modelar_*. Ese re-modelado reconstruye la tabla desde
+# tabla_total_flujos_directos, entonces la fila agregada quedaba huerfana: la
+# derivacion no impactaba en ningun resultado.
 
-#tabla_tty_dp, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol, DERIVACION_TTY_DP, BYPASS_TTY_DP = modelar_TTY(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_TTY=retenidos_TTY_DP, CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP, CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_DP, MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA)
 
-#tabla_tty_tbx, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol, DERIVACION_TTY_TBX, BYPASS_TTY_TBX = modelar_TTY(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_TTY=retenidos_TTY_TBX, CAPACIDAD_TTY=config.CAPACIDAD_TTY_TBX, CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_TBX, MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_TBX_A_TTY_DP)
+comunes = dict(
+    matriz_inyecciones = load_matriz_inyecciones(config.PATH_INPUTS),
+    calcular_retenidos=calcular_retenidos,
+    tabla_total_flujos_directos=tabla_total_flujos_directos,
+    propiedades=propiedades,
+    COMPUESTOS=COMPUESTOS,
+)
 
-MEGA = modelar_MEGA(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_MEGA = retenidos_MEGA, CAPACIDAD_MEGA=config.CAPACIDAD_MEGA, CAPACIDAD_EVACUACION_MEGA=config.CAPACIDAD_EVACUACION_MEGA)
 
-TTY_DP = modelar_TTY(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_TTY=retenidos_TTY_DP, CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP, CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_DP)
+# 1) TTY-TBX: cabeza de la cadena, no recibe derivaciones.
+TTY_TBX = modelar_TTY(**comunes,
+                      retenidos_TTY=retenidos_TTY_TBX,
+                      CAPACIDAD_TTY=config.CAPACIDAD_TTY_TBX,
+                      CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_TBX)
 
-TTY_TBX = modelar_TTY(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_TTY=retenidos_TTY_TBX, CAPACIDAD_TTY=config.CAPACIDAD_TTY_TBX, CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_TBX)
+
+# 2) TTY-TBX -> TTY-DP
+derivacion_TTY_TBX_a_TTY_DP = calcular_DERIVACION(
+    tabla_planta_origen=TTY_TBX['tabla_total'],
+    gas_rico_IN_origen=TTY_TBX['gas_rico_IN'],
+    CAPACIDAD_EVACUACION_PLANTA=config.CAPACIDAD_EVACUACION_TTY_TBX,
+    MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_TBX_A_TTY_DP,
+    nombre_origen='tty_tbx')
 
 
-tabla_mega = MEGA['tabla_total']
+TTY_DP = modelar_TTY(**comunes,
+                     retenidos_TTY=retenidos_TTY_DP,
+                     CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP,
+                     CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_DP,
+                     derivaciones=[derivacion_TTY_TBX_a_TTY_DP])
 
-tabla_tty_dp = TTY_DP['tabla_total']
+
+# 3) TTY-DP -> MEGA
+# gas_rico_IN de TTY-DP ya incluye el aporte de TBX, entonces la cromato que
+# viaja a MEGA es la de la mezcla real. Con esto deja de hacer falta el
+# IF(derivacion_TTY_DP_CROMA = 0, gas_rico_IN_TTY_TBX, ...) del Excel.
+derivacion_TTY_DP_a_MEGA = calcular_DERIVACION(
+    tabla_planta_origen=TTY_DP['tabla_total'],
+    gas_rico_IN_origen=TTY_DP['gas_rico_IN'],
+    CAPACIDAD_EVACUACION_PLANTA=config.CAPACIDAD_EVACUACION_TTY_DP,
+    MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA,
+    nombre_origen='tty_dp')
+
+
+MEGA = modelar_MEGA(**comunes,
+                    retenidos_MEGA=retenidos_MEGA,
+                    CAPACIDAD_MEGA=config.CAPACIDAD_MEGA,
+                    CAPACIDAD_EVACUACION_MEGA=config.CAPACIDAD_EVACUACION_MEGA,
+                    derivaciones=[derivacion_TTY_DP_a_MEGA])
+
 
 tabla_tty_tbx = TTY_TBX['tabla_total']
+tabla_tty_dp = TTY_DP['tabla_total']
+tabla_mega = MEGA['tabla_total']
 
 
+# TODO (signos): el volumen derivado se SUMA en la planta destino pero todavia
+# no se RESTA en la planta origen, entonces
+#   sum(tabla_tty_tbx) + sum(tabla_tty_dp) + sum(tabla_mega)
+# ya no cierra contra la inyeccion total: el gas derivado se cuenta dos veces.
+# Si hay que descontarlo, el lugar es un argumento vol_derivado_saliente en
+# modelar_TTY que prorratee el descuento entre las filas del origen, calculado
+# despues de la derivacion para mantener la pasada unica.
+#
+# TODO (bypass vs derivacion): hoy BYPASS se calcula sobre el volumen que llega
+# (post-derivacion entrante) pero sin descontar lo que la planta deriva hacia
+# afuera. Definir la prioridad: derivar primero y bypasear el resto, o al reves.
 
-
-derivacion_TTY_TBX_a_TTY_DP = calcular_DERIVACION(tabla_planta_origen=TTY_TBX['tabla_total'], gas_rico_IN_origen=TTY_TBX['gas_rico_IN'], CAPACIDAD_EVACUACION_PLANTA=config.CAPACIDAD_EVACUACION_TTY_TBX, MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_TBX_A_TTY_DP)
-
-
-tabla_tty_dp.loc[len(tabla_tty_dp)] = {'Volumen_inyectado' : derivacion_TTY_TBX_a_TTY_DP['vol_derivacion'],
-                                   **dict(zip(COMPUESTOS, derivacion_TTY_TBX_a_TTY_DP['cromato_derivacion']))}
-
-
-derivacion_TTY_DP_a_MEGA = calcular_DERIVACION(tabla_planta_origen=TTY_DP['tabla_total'], gas_rico_IN_origen=TTY_DP['gas_rico_IN'], CAPACIDAD_EVACUACION_PLANTA=config.CAPACIDAD_EVACUACION_TTY_DP, MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA)
-
-
-
-
-tabla_mega.loc[len(tabla_mega)] = {'Volumen_inyectado' : derivacion_TTY_DP_a_MEGA['vol_derivacion'],
-                                   **dict(zip(COMPUESTOS, derivacion_TTY_DP_a_MEGA['cromato_derivacion']))}
-
-MEGA = modelar_MEGA(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_MEGA = retenidos_MEGA, CAPACIDAD_MEGA=config.CAPACIDAD_MEGA, CAPACIDAD_EVACUACION_MEGA=config.CAPACIDAD_EVACUACION_MEGA)
-
-TTY_DP = modelar_TTY(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, COMPUESTOS=COMPUESTOS, retenidos_TTY=retenidos_TTY_DP, CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP, CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_DP)
-
-
-
+# endregion
 
 
 

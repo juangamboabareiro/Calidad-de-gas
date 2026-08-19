@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from io_.loaders import load_matriz_inyecciones, load_retenidos_rtp
 from domain.normalizacion import normalizar
 from domain.ctes_gas import PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, BUTANOS, PROPANO, GASOLINA, ETANO, COMPUESTOS
 import config
@@ -9,8 +8,6 @@ from pipeline.plantas.planta_template import io_plantas
 from pipeline.plantas.flujo_plantas import calcular_BYPASS, calcular_DERIVACION
 
 
-matriz_inyecciones = load_matriz_inyecciones(config.PATH_INPUTS)
-retenidos_rtp = load_retenidos_rtp(config.PATH_INPUTS)
 
 
 
@@ -36,7 +33,7 @@ def correccion_TTY(retenidos_vol, tabla_tty, propiedades, gas_rico_IN, retenidos
 
     correccion_propano = min(max(CAPACIDAD_EVACUACION_TTY - butanos_retenido.values, 0), propano_retenido.values)
 
-    
+
 
     coef_corr_propano = propano_retenido /(PRESION_BASE * min(CAPACIDAD_EVACUACION_TTY, tabla_tty['Volumen_inyectado'].sum()) * propiedades['Peso molecular [kg/kmol]'].loc[PROPANO] * gas_rico_IN.loc[PROPANO] * propiedades['Z'].loc[PROPANO] * CONSTANTE_GAS *(273.15 + TEMPERATURA_BASE))
 
@@ -55,11 +52,37 @@ def correccion_TTY(retenidos_vol, tabla_tty, propiedades, gas_rico_IN, retenidos
 
 
 
-def modelar_TTY(calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_TTY, CAPACIDAD_TTY, CAPACIDAD_EVACUACION_TTY):
+def modelar_TTY(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_TTY, CAPACIDAD_TTY, CAPACIDAD_EVACUACION_TTY, derivaciones=None):
+    """Modela una planta TTY (Dew Point o TBX).
 
-    tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, compuestos=COMPUESTOS, retenidos_planta=retenidos_TTY, nombre_planta='TTY')
+    derivaciones : list[dict] | None
+        Derivaciones que ENTRAN a esta planta desde otra, tal como las devuelve
+        calcular_DERIVACION. Se inyectan dentro de io_plantas ANTES de calcular
+        Volumen_relativo, así el gas derivado pesa en la mezcla de gas_rico_IN.
+        Si no se pasan, la planta se modela solo con su gas propio.
+    """
+
+    # Se arman los kwargs una sola vez para garantizar que el re-modelado por
+    # correccion de LGN (abajo) use EXACTAMENTE las mismas derivaciones. Si se
+    # pasan solo en la primera llamada, la derivacion se pierde en silencio
+    # cada vez que se dispara la correccion.
+    comunes = dict(
+        matriz_inyecciones = matriz_inyecciones,
+        calcular_retenidos=calcular_retenidos,
+        tabla_total_flujos_directos=tabla_total_flujos_directos,
+        propiedades=propiedades,
+        compuestos=COMPUESTOS,
+        nombre_planta='TTY',
+        derivaciones=derivaciones,
+    )
+
+    tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=retenidos_TTY)
 
 
+    # OJO: tabla_tty ya incluye las filas de derivacion entrante, entonces el
+    # BYPASS se calcula sobre el volumen POST-derivacion (gas que efectivamente
+    # llega a la planta). Lo que esta planta deriva hacia otra todavia NO se
+    # descuenta de su propio volumen -> ver TODO de signos en main.py.
     BYPASS_TTY = calcular_BYPASS(tabla_planta=tabla_tty, CAPACIDAD_EVACUACION_PLANTA=CAPACIDAD_EVACUACION_TTY, CAPACIDAD_PLANTA=CAPACIDAD_TTY)
 
     if retenidos_vol.values.sum() > CAPACIDAD_EVACUACION_TTY:
@@ -74,15 +97,8 @@ def modelar_TTY(calcular_retenidos, tabla_total_flujos_directos, propiedades, CO
 
         for i in range(len(BUTANOS)):
             new_retenidos.loc[BUTANOS[i]] = np.ravel(coef_corr_butanos)[i]
-    
 
-        tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(calcular_retenidos=calcular_retenidos, tabla_total_flujos_directos=tabla_total_flujos_directos, propiedades=propiedades, compuestos=COMPUESTOS, retenidos_planta=new_retenidos.T, nombre_planta='TTY')
+
+        tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=new_retenidos.T)
 
     return {'tabla_total' : tabla_tty, 'gas_rico_IN' : gas_rico_IN, 'gas_residual_OUT' : gas_residual_OUT, 'retenidos' : retenidos, 'retenidos_vol' : retenidos_vol, 'bypass' : BYPASS_TTY}
-
-
-
-
-
-
-
