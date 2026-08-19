@@ -157,6 +157,7 @@ tabla_tty_tbx = TTY_TBX['tabla_total']
 tabla_tty_dp = TTY_DP['tabla_total']
 tabla_mega = MEGA['tabla_total']
 
+print(tabla_mega[['Area', 'Volumen']])
 
 flujos_plantas = pd.DataFrame({
     'TTY_TBX': TTY_TBX['flujos'],
