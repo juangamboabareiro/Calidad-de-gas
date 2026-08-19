@@ -28,19 +28,23 @@ def _fila_derivacion(derivacion, compuestos):
     return fila
 
 
-def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, compuestos, retenidos_planta, nombre_planta, derivaciones=None, vol_procesado=None):
-    """Arma la tabla de input de una planta y calcula gas rico / residual / retenidos.
+def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, compuestos, retenidos_planta, nombre_planta, derivaciones=None):
+    """Modela el POOL completo que llega a una planta.
 
-    vol_procesado : float | None
-        Volumen sobre el que se calculan los RETENIDOS. Si es None se usa todo
-        el volumen entrante: eso da el LGN POTENCIAL, el que la planta produciria
-        si pudiera tratar todo, y es lo que se compara contra la capacidad de
-        evacuacion para saber si hay excedente.
-        Si se pasa (flujos['vol_procesado'] de calcular_flujos_planta), los
-        retenidos salen sobre el gas realmente tratado, o sea descontando lo
-        derivado y lo bypaseado.
-        La mezcla (gas_rico_IN) NO cambia en ninguno de los dos casos: se asume
-        que lo que se deriva o bypasea tiene la cromato promedio de entrada.
+    Devuelve el escenario de referencia: la mezcla (gas_rico_IN) y los retenidos
+    que saldrian si la planta tratara TODO el pool. Sobre ese resultado, quien
+    llama calcula el LGN por unidad de volumen y decide cuanto gas asigna
+    realmente (ver flujo_plantas.calcular_lgn_unitario / repartir_flujo_planta).
+
+    No aplica capacidades ni bypass: eso se resuelve afuera, escalando pro-rata,
+    porque los retenidos son lineales en el volumen y la cromato no cambia al
+    tomar una porcion del mismo gas.
+
+    derivaciones : list[dict] | None
+        Gas que llega desde otra planta con OTRA composicion (caso TTY-DP ->
+        MEGA). Se suma como fila de input ANTES de calcular Volumen_relativo,
+        asi pesa en la mezcla. Para trenes que comparten pool (TBX -> DP) no se
+        usa: ahi la cromato es la misma y solo cambia el volumen asignado.
     """
 
     tabla_plantas = pd.DataFrame()
@@ -55,9 +59,6 @@ def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direct
     )
 
 
-    # Las derivaciones entrantes se suman ANTES de calcular Volumen_relativo,
-    # asi el gas derivado pesa en la mezcla que forma gas_rico_IN. Si se
-    # agregaran despues, no afectarian ningun resultado.
     if derivaciones:
         filas = [_fila_derivacion(d, compuestos) for d in derivaciones
                  if float(d['vol_derivacion']) != 0]
@@ -75,9 +76,7 @@ def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direct
     gas_residual_OUT = gas_rico_IN * (1 - retenidos_planta)
 
 
-    volumen_tratado = tabla_plantas['Volumen_inyectado'].sum() if vol_procesado is None else vol_procesado
-
-    retenidos = calcular_retenidos(propiedades, volumen_tratado, retenidos_planta, gas_rico_IN, PRESION_BASE, CONSTANTE_GAS, TEMPERATURA_BASE).T
+    retenidos = calcular_retenidos(propiedades, tabla_plantas['Volumen_inyectado'].sum(), retenidos_planta, gas_rico_IN, PRESION_BASE, CONSTANTE_GAS, TEMPERATURA_BASE).T
 
 
     etano_retenido = retenidos.loc[ETANO].sum()

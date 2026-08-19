@@ -8,63 +8,76 @@ from domain.propiedades_gas import calcular_energia_total, calcular_propiedades_
 from pipeline.plantas.planta_template import io_plantas
 
 
-from pipeline.plantas.flujo_plantas import calcular_flujos_planta, calcular_DERIVACION
+from pipeline.plantas.flujo_plantas import (
+    calcular_lgn_unitario,
+    calcular_volumen_maximo,
+    repartir_flujo_planta,
+    calcular_DERIVACION,
+)
 
 
 
-# antes: factor_retenidos=1/1000
-def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_MEGA, CAPACIDAD_MEGA, CAPACIDAD_EVACUACION_MEGA, derivaciones=None, factor_retenidos=1.0, capacidad_libre_destino=None):
-    """Modela MEGA.
+def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_MEGA, CAPACIDAD_EVACUACION_MEGA, CAPACIDAD_MEGA=None, derivaciones=None):
+    """Modela MEGA: ultimo eslabon de la cascada.
 
-    MEGA no tiene poder de derivacion: es la ultima planta de la cadena, entonces
-    todo el excedente sobre la capacidad de evacuacion de LGN es BYPASS. Por eso
-    no recibe MAX_DERIVACION_PLANTA_A_PLANTA (queda fijo en 0).
+    MEGA tiene pool propio y ademas recibe la derivacion de TTY-DP, que viene
+    con OTRA composicion (el gas del pool TTY). Por eso si se pasa por
+    derivaciones=[...] a io_plantas, que la suma como fila de input antes de
+    calcular Volumen_relativo y la mete en la mezcla de gas_rico_IN. Recien con
+    la mezcla armada tiene sentido calcular el LGN por unidad de volumen.
 
-    El coef_correccion que estaba antes aca
-        coef_correccion = CAPACIDAD_EVACUACION_MEGA/(retenidos_vol.sum()/1000)
-        retenidos_vol   = retenidos_vol * coef_correccion
-    es exactamente flujos['fraccion_tratable']: escalar los retenidos es lo mismo
-    que decir que se trata solo vol_procesado. Ahora se hace via vol_procesado,
-    asi el gas no tratado queda explicito como bypass en vez de desaparecer.
-
-    factor_retenidos : float
-        Conversion de retenidos_vol a la unidad de CAPACIDAD_EVACUACION_MEGA.
-        Default 1/1000 para reproducir el /1000 (kg/d -> tn/d) que tenia el if.
-
-    derivaciones : list[dict] | None
-        Derivaciones que ENTRAN a MEGA (tipicamente desde TTY-DP). Se inyectan
-        dentro de io_plantas antes de calcular Volumen_relativo, asi el gas
-        derivado entra en la mezcla de gas_rico_IN en vez de quedar colgado en
-        una fila que nadie lee.
+    No deriva hacia ningun lado (MAX_DERIVACION fijo en 0), entonces todo lo que
+    no pueda tratar es BYPASS.
     """
 
-    comunes = dict(
-        matriz_inyecciones = matriz_inyecciones,
+    tabla_pool, gas_rico_IN, gas_residual_OUT, retenidos_pool, retenidos_vol_pool = io_plantas(
+        matriz_inyecciones=matriz_inyecciones,
         calcular_retenidos=calcular_retenidos,
         tabla_total_flujos_directos=tabla_total_flujos_directos,
         propiedades=propiedades,
         compuestos=COMPUESTOS,
+        retenidos_planta=retenidos_MEGA,
         nombre_planta='MEGA',
         derivaciones=derivaciones,
     )
 
-    # LGN potencial: lo que produciria tratando TODO el gas entrante.
-    tabla_mega, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=retenidos_MEGA)
+    vol_pool = float(tabla_pool['Volumen_inyectado'].values.sum())
 
-    flujos = calcular_flujos_planta(
-        tabla_planta=tabla_mega,
-        retenidos_vol=retenidos_vol,
+    lgn_unitario = calcular_lgn_unitario(vol_pool, retenidos_vol_pool)
+
+    vol_maximo = calcular_volumen_maximo(
+        lgn_unitario=lgn_unitario,
         CAPACIDAD_EVACUACION_PLANTA=CAPACIDAD_EVACUACION_MEGA,
-        MAX_DERIVACION_PLANTA_A_PLANTA=0.0,
-        factor_retenidos=factor_retenidos,
-        capacidad_libre_destino=capacidad_libre_destino,
+        CAPACIDAD_INGRESO_PLANTA=CAPACIDAD_MEGA,
     )
 
-    # Retenidos sobre el gas realmente tratado (equivale al viejo coef_correccion).
-    if flujos['excedente'] > 0:
+    # vol_disponible = pool propio + derivacion recibida (ya viene sumada en la
+    # tabla). MAX_DERIVACION = 0: ultimo eslabon, el sobrante es todo bypass.
+    flujos = repartir_flujo_planta(
+        vol_disponible=vol_pool,
+        vol_maximo=vol_maximo,
+        MAX_DERIVACION_PLANTA_A_PLANTA=0.0,
+    )
 
-        comunes['vol_procesado'] = flujos['vol_procesado']
+    flujos['lgn_unitario'] = lgn_unitario
+    flujos['lgn_asignado'] = lgn_unitario * flujos['vol_asignado']
+    flujos['activa'] = True
 
-        tabla_mega, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=retenidos_MEGA)
+    escala = (flujos['vol_asignado'] / vol_pool) if vol_pool else 0.0
 
-    return {'tabla_total' : tabla_mega, 'gas_rico_IN' : gas_rico_IN, 'gas_residual_OUT' : gas_residual_OUT, 'retenidos' : retenidos, 'retenidos_vol' : retenidos_vol, 'flujos' : flujos, 'bypass' : flujos['bypass']}
+    tabla_mega = tabla_pool.copy()
+    tabla_mega['Volumen_pool'] = tabla_pool['Volumen_inyectado']
+    tabla_mega['Volumen_inyectado'] = tabla_pool['Volumen_inyectado'] * escala
+
+    retenidos = retenidos_pool * escala
+    retenidos_vol = retenidos_vol_pool * escala
+
+    return {
+        'tabla_total': tabla_mega,
+        'gas_rico_IN': gas_rico_IN,
+        'gas_residual_OUT': gas_residual_OUT,
+        'retenidos': retenidos,
+        'retenidos_vol': retenidos_vol,
+        'flujos': flujos,
+        'bypass': flujos['bypass'],
+    }

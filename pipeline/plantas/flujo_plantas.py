@@ -1,133 +1,109 @@
 import pandas as pd
 
 
-def calcular_flujos_planta(tabla_planta, retenidos_vol, CAPACIDAD_EVACUACION_PLANTA, MAX_DERIVACION_PLANTA_A_PLANTA=0.0, factor_retenidos=1.0, capacidad_libre_destino=None):
-    """Reparte el gas que llega a una planta entre procesado / derivado / bypass.
+def calcular_lgn_unitario(vol_referencia, retenidos_vol):
+    """LGN (tn/d) por unidad de Volumen_inyectado.
 
-    QUE LIMITA: la capacidad de EVACUACION DE LGN, no la de ingreso de gas. La
-    capacidad de ingreso es holgada, entonces no aparece en este calculo (queda
-    solo para el KPI de ocupacion). Como el gas hay que tratarlo lo mas posible
-    para poder comercializarlo, el orden de prioridades es:
+    retenidos_vol es lineal en el volumen tratado (a composicion y coeficientes
+    de retencion fijos), asi que este ratio permite pasar de gas a liquido y al
+    reves sin re-modelar la planta.
 
-        1. tratar todo lo que la evacuacion de LGN permita
-        2. DERIVAR el excedente a otra planta, para que igual se trate
-        3. BYPASEAR solo lo que ni derivando entra
-
-    COMO SE PASA DE LIQUIDO A GAS: retenidos_vol es lineal en Volumen_inyectado
-    (a composicion y coeficientes de retencion fijos), asi que el excedente de
-    LGN se traduce a volumen de gas con una regla de tres:
-
-        lgn_potencial     = retenidos_vol.sum() * factor_retenidos
-        fraccion_tratable = CAPACIDAD_EVACUACION_PLANTA / lgn_potencial
-        vol_procesado     = vol_entrante * fraccion_tratable
-        excedente         = vol_entrante - vol_procesado
-        vol_derivado      = min(excedente, MAX_DERIVACION[, capacidad_libre_destino])
-        bypass            = excedente - vol_derivado
-
-    Vale la identidad, que es la que cierra el balance:
-
-        vol_entrante == vol_procesado + vol_derivado + bypass
-
-    Se asume que el gas que se deriva y el que bypasea tienen la misma cromato
-    que el promedio de entrada (gas_rico_IN): se separa un caudal, no un corte.
-
-    tabla_planta : DataFrame
-        Tabla de input de la planta YA con las derivaciones entrantes sumadas
-        (o sea, la que devuelve io_plantas): propio + derivado de la anterior.
-
-    retenidos_vol : DataFrame
-        LGN que produciria la planta si tratara TODO el volumen entrante, con
-        los coeficientes de retencion YA corregidos si hubo correccion. El orden
-        importa: primero se corrige la recuperacion (tratar lo mas posible) y
-        recien despues se deriva lo que sigue sin entrar.
-
-    CAPACIDAD_EVACUACION_PLANTA : float
-        Limite de evacuacion de LGN, en la unidad en que quede expresado
-        retenidos_vol.sum() * factor_retenidos.
-
-    factor_retenidos : float
-        Conversion de retenidos_vol a la unidad de CAPACIDAD_EVACUACION_PLANTA.
-        Hoy cada planta usa una unidad distinta (TTY-DP compara el crudo contra
-        200, MEGA divide por 1000 contra 5600, TBX venia en barriles contra
-        7700) -> este factor lo hace explicito en vez de esconderlo en el if.
-        El cociente es adimensional, pero SOLO si los dos lados usan la misma
-        unidad: si el factor esta mal, fraccion_tratable sale mal.
-
-    MAX_DERIVACION_PLANTA_A_PLANTA : float
-        Tope de la derivacion hacia la planta siguiente, en la MISMA unidad que
-        tabla_planta['Volumen_inyectado']. 0.0 para MEGA, que no deriva.
-
-    capacidad_libre_destino : float | None
-        Tope opcional adicional: cuanto gas mas puede absorber el destino. Si es
-        None no se topea, y se puede derivar gas que el destino tampoco trata
-        (le va a aparecer como bypass alla en vez de aca).
+    vol_referencia : float
+        Volumen con el que se calculo retenidos_vol (todo el pool disponible).
     """
 
-    vol_entrante = float(tabla_planta['Volumen_inyectado'].values.sum())
+    vol_referencia = float(vol_referencia)
 
-    lgn_potencial = float(retenidos_vol.values.sum()) * float(factor_retenidos)
+    if vol_referencia <= 0:
+        return 0.0
 
-    sin_excedente = {
-        'vol_entrante': vol_entrante,
-        'lgn_potencial': lgn_potencial,
-        'fraccion_tratable': 1.0,
-        'vol_procesado': vol_entrante,
-        'excedente': 0.0,
-        'vol_derivado': 0.0,
-        'bypass': 0.0,
-    }
+    return float(retenidos_vol.values.sum()) / vol_referencia
 
-    if vol_entrante <= 0 or lgn_potencial <= 0:
-        return sin_excedente
 
-    if lgn_potencial <= CAPACIDAD_EVACUACION_PLANTA:
-        return sin_excedente
+def calcular_volumen_maximo(lgn_unitario, CAPACIDAD_EVACUACION_PLANTA, CAPACIDAD_INGRESO_PLANTA=None):
+    """Cuanto gas puede tomar la planta antes de "llenarse".
 
-    fraccion_tratable = float(CAPACIDAD_EVACUACION_PLANTA) / lgn_potencial
+    LLENARSE = agotar la capacidad de EVACUACION DE LGN. Es la restriccion
+    activa; el ingreso de gas rara vez limita, pero si se pasa
+    CAPACIDAD_INGRESO_PLANTA se toma el menor de los dos.
 
-    vol_procesado = vol_entrante * fraccion_tratable
+        vol_max = CAPACIDAD_EVACUACION_PLANTA / lgn_unitario
 
-    excedente = vol_entrante - vol_procesado
+    Si lgn_unitario <= 0 (planta sin retencion, o retenidos negativos por
+    coeficientes corregidos) no hay restriccion de liquido: devuelve inf, o la
+    capacidad de ingreso si esta definida.
+    """
 
-    tope_derivacion = float(MAX_DERIVACION_PLANTA_A_PLANTA)
+    if lgn_unitario <= 0:
+        vol_max = float('inf')
+    else:
+        vol_max = float(CAPACIDAD_EVACUACION_PLANTA) / float(lgn_unitario)
 
-    if capacidad_libre_destino is not None:
-        tope_derivacion = min(tope_derivacion, max(float(capacidad_libre_destino), 0.0))
+    if CAPACIDAD_INGRESO_PLANTA is not None:
+        vol_max = min(vol_max, float(CAPACIDAD_INGRESO_PLANTA))
 
-    vol_derivado = min(excedente, tope_derivacion)
+    return vol_max
 
-    bypass = excedente - vol_derivado
+
+def repartir_flujo_planta(vol_disponible, vol_maximo, MAX_DERIVACION_PLANTA_A_PLANTA=0.0):
+    """Reparte el gas que llega a un eslabon de la cascada.
+
+    ORDEN (definido 19/8): la planta se LLENA hasta su capacidad de evacuacion,
+    lo que sobra se DERIVA a la planta siguiente para que igual se trate, y lo
+    que ni la derivacion se lleva es BYPASS.
+
+        vol_asignado = min(vol_disponible, vol_maximo)
+        sobrante     = vol_disponible - vol_asignado
+        vol_derivado = min(sobrante, MAX_DERIVACION_PLANTA_A_PLANTA)
+        bypass       = sobrante - vol_derivado
+
+    Vale la identidad, que es la que cierra el balance del eslabon:
+
+        vol_disponible == vol_asignado + vol_derivado + bypass
+
+    MAX_DERIVACION_PLANTA_A_PLANTA : float
+        Tope del traspaso hacia la planta siguiente, en unidades de
+        Volumen_inyectado. 0.0 para el ultimo eslabon (MEGA): ahi todo el
+        sobrante es bypass.
+    """
+
+    vol_disponible = max(float(vol_disponible), 0.0)
+
+    vol_asignado = min(vol_disponible, float(vol_maximo))
+
+    sobrante = vol_disponible - vol_asignado
+
+    vol_derivado = min(sobrante, float(MAX_DERIVACION_PLANTA_A_PLANTA))
+
+    bypass = sobrante - vol_derivado
 
     return {
-        'vol_entrante': vol_entrante,
-        'lgn_potencial': lgn_potencial,
-        'fraccion_tratable': fraccion_tratable,
-        'vol_procesado': vol_procesado,
-        'excedente': excedente,
+        'vol_disponible': vol_disponible,
+        'vol_maximo': float(vol_maximo),
+        'vol_asignado': vol_asignado,
+        'sobrante': sobrante,
         'vol_derivado': vol_derivado,
         'bypass': bypass,
+        'ocupacion': (vol_asignado / vol_maximo) if vol_maximo not in (0, float('inf')) else None,
     }
 
 
 def calcular_DERIVACION(flujos_origen, gas_rico_IN_origen, nombre_origen='derivacion'):
-    """Volumen y cromatografia del gas que una planta deriva hacia la siguiente.
+    """Empaqueta el gas que una planta le pasa a la SIGUIENTE en la cascada.
 
-    El volumen ya viene resuelto por calcular_flujos_planta (excedente de LGN
-    traducido a gas, topeado por MAX_DERIVACION), aca solo se lo empaqueta con
-    la cromato.
+    Solo hace falta cuando el destino tiene un pool propio de otra composicion
+    (el caso TTY-DP -> MEGA): ahi el gas derivado se inyecta como una fila mas
+    de input dentro de io_plantas, antes de calcular Volumen_relativo, para que
+    entre en la mezcla que forma gas_rico_IN.
 
-    El resultado se le pasa a modelar_TTY / modelar_MEGA de la planta DESTINO
-    via derivaciones=[...], que lo inyecta como una fila mas de input dentro de
-    io_plantas. Agregarlo a mano a la tabla ya devuelta no sirve: io_plantas
-    reconstruye la tabla desde tabla_total_flujos_directos y la fila se pierde.
+    Cuando origen y destino comparten el mismo pool (TTY-TBX -> TTY-DP, que son
+    dos trenes sobre el mismo gas) NO hace falta: la cromato es identica y basta
+    con pasarle a la planta destino el volumen via vol_disponible.
 
-    nombre_origen : str
-        Va a la columna 'Area' de la fila generada, para poder identificarla
-        en la tabla de la planta destino.
+    El gas derivado sale SIN TRATAR, entonces su cromato es la del gas rico de
+    ENTRADA de la planta origen. gas_rico_IN_origen es una Series.
     """
 
-    # El gas derivado sale SIN TRATAR, entonces su cromato es la del gas rico de
-    # entrada de la planta origen. gas_rico_IN_origen es una Series.
     return {
         'vol_derivacion': flujos_origen['vol_derivado'],
         'cromato_derivacion': gas_rico_IN_origen,

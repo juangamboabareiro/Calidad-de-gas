@@ -5,13 +5,31 @@ from domain.ctes_gas import PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, BUTAN
 import config
 from domain.propiedades_gas import calcular_energia_total, calcular_propiedades_gas, calcular_retenidos
 from pipeline.plantas.planta_template import io_plantas
-from pipeline.plantas.flujo_plantas import calcular_flujos_planta, calcular_DERIVACION
+from pipeline.plantas.flujo_plantas import (
+    calcular_lgn_unitario,
+    calcular_volumen_maximo,
+    repartir_flujo_planta,
+    calcular_DERIVACION,
+)
 
 
 
 
 
 def correccion_TTY(retenidos_vol, tabla_tty, propiedades, gas_rico_IN, retenidos, CAPACIDAD_EVACUACION_TTY):
+    """Baja la recuperacion de C3/C4 para meter el LGN dentro de la evacuacion.
+
+    NO esta en el camino del modelo de cascada: con la logica de
+    llenar -> derivar -> bypasear, a la planta se le asigna exactamente el
+    volumen cuyo LGN entra en la evacuacion, entonces esta correccion nunca
+    tendria que dispararse (y si se disparara, absorberia el excedente y la
+    derivacion quedaria en cero, que es el sintoma que veniamos viendo).
+
+    Se conserva porque codifica algo que la cascada no modela: que la gasolina
+    pasa 100%, que no se trata etano, y que el limite se llena primero con C4 y
+    despues con C3. Si el limite de evacuacion aplica solo a C3+C4 y no a los
+    cuatro cortes, hay que revisar calcular_lgn_unitario, no esta funcion.
+    """
 
     etano_retenido = retenidos_vol['etano']
 
@@ -52,104 +70,88 @@ def correccion_TTY(retenidos_vol, tabla_tty, propiedades, gas_rico_IN, retenidos
 
 
 
-def modelar_TTY(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_TTY, CAPACIDAD_TTY, CAPACIDAD_EVACUACION_TTY, derivaciones=None, MAX_DERIVACION_PLANTA_A_PLANTA=0.0, factor_retenidos=1.0, capacidad_libre_destino=None):
-    """Modela una planta TTY (Dew Point o TBX).
+def modelar_TTY(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_TTY, CAPACIDAD_EVACUACION_TTY, vol_disponible=None, MAX_DERIVACION_PLANTA_A_PLANTA=0.0, CAPACIDAD_TTY=None, derivaciones=None, activa=True):
+    """Modela un tren TTY (Dew Point o TBX) como eslabon de la cascada.
 
-    ORDEN DE RESOLUCION (lo que limita es la evacuacion de LGN, no el ingreso
-    de gas: la capacidad de ingreso es holgada y el gas hay que tratarlo lo mas
-    posible para comercializarlo):
+    LOGICA
+    ------
+    1. Se modela el POOL completo (io_plantas) para obtener la mezcla y el LGN
+       de referencia.
+    2. lgn_unitario = LGN de referencia / volumen del pool.
+    3. vol_maximo = CAPACIDAD_EVACUACION_TTY / lgn_unitario  -> cuanto gas puede
+       tomar antes de llenarse. La evacuacion de LGN es la restriccion activa;
+       CAPACIDAD_TTY (ingreso de gas) entra solo como min() adicional.
+    4. Se llena hasta vol_maximo, se DERIVA el sobrante hasta
+       MAX_DERIVACION_PLANTA_A_PLANTA, y el resto es BYPASS.
+    5. Los retenidos se escalan pro-rata al volumen asignado: son lineales en el
+       volumen, asi que no hace falta re-modelar.
 
-        1. modelar con los coeficientes de retencion nominales
-        2. si el LGN potencial supera la evacuacion -> CORREGIR la recuperacion
-           (menos C3/C4) para tratar todo lo que se pueda
-        3. si aun corregida sigue sin entrar -> DERIVAR el excedente a la
-           planta siguiente, hasta MAX_DERIVACION_PLANTA_A_PLANTA
-        4. lo que ni derivando entra -> BYPASS
-        5. recalcular retenidos sobre el volumen realmente tratado
+    vol_disponible : float | None
+        Gas que llega a este tren. None = todo el pool de matriz_inyecciones.
+        Post-PM, TTY-DP recibe solo el sobrante de TTY-TBX, entonces se le pasa
+        ese volumen y la tabla del pool se escala pro-rata (misma cromato: los
+        dos trenes trabajan sobre el mismo gas).
 
-    derivaciones : list[dict] | None
-        Derivaciones que ENTRAN a esta planta desde otra, tal como las devuelve
-        calcular_DERIVACION. Se inyectan dentro de io_plantas ANTES de calcular
-        Volumen_relativo, así el gas derivado pesa en la mezcla de gas_rico_IN.
-
-    MAX_DERIVACION_PLANTA_A_PLANTA : float
-        Tope de lo que esta planta puede derivar hacia la SIGUIENTE, en la MISMA
-        unidad que Volumen_inyectado. El volumen derivado sale de
-        flujos['vol_derivado'] y se le pasa a calcular_DERIVACION.
-
-    factor_retenidos : float
-        Conversion de retenidos_vol a la unidad de CAPACIDAD_EVACUACION_TTY.
-        Ver calcular_flujos_planta.
-
-    capacidad_libre_destino : float | None
-        Tope opcional adicional para la derivacion (cuanto puede absorber el
-        destino).
-
-    CAPACIDAD_TTY : float
-        Capacidad de ingreso de gas. NO se usa para derivar ni bypasear (no es
-        la restriccion activa); queda para reporte / KPI de ocupacion.
+    activa : bool
+        False para un tren fuera de servicio (TTY-TBX antes de la fecha de PM):
+        no toma nada y todo su gas disponible pasa como derivacion al siguiente.
     """
 
-    # Se arman los kwargs una sola vez para garantizar que todos los re-modelados
-    # usen EXACTAMENTE las mismas derivaciones. Si se pasan solo en la primera
-    # llamada, la derivacion entrante se pierde en silencio en los siguientes.
-    comunes = dict(
-        matriz_inyecciones = matriz_inyecciones,
+    tabla_pool, gas_rico_IN, gas_residual_OUT, retenidos_pool, retenidos_vol_pool = io_plantas(
+        matriz_inyecciones=matriz_inyecciones,
         calcular_retenidos=calcular_retenidos,
         tabla_total_flujos_directos=tabla_total_flujos_directos,
         propiedades=propiedades,
         compuestos=COMPUESTOS,
+        retenidos_planta=retenidos_TTY,
         nombre_planta='TTY',
         derivaciones=derivaciones,
     )
 
-    # 1) LGN potencial: lo que produciria tratando TODO el gas entrante.
-    tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=retenidos_TTY)
+    vol_pool = float(tabla_pool['Volumen_inyectado'].values.sum())
 
-    retenidos_planta_final = retenidos_TTY
+    if vol_disponible is None:
+        vol_disponible = vol_pool
 
+    lgn_unitario = calcular_lgn_unitario(vol_pool, retenidos_vol_pool)
 
-    # 2) Correccion de recuperacion: tratar lo mas posible antes de resignar gas.
-    if retenidos_vol.values.sum() * factor_retenidos > CAPACIDAD_EVACUACION_TTY:
+    if activa:
+        vol_maximo = calcular_volumen_maximo(
+            lgn_unitario=lgn_unitario,
+            CAPACIDAD_EVACUACION_PLANTA=CAPACIDAD_EVACUACION_TTY,
+            CAPACIDAD_INGRESO_PLANTA=CAPACIDAD_TTY,
+        )
+    else:
+        # Tren fuera de servicio: no toma nada, todo pasa de largo.
+        vol_maximo = 0.0
 
-        correcciones, coef_corr_butanos, coef_corr_propano = correccion_TTY(tabla_tty=tabla_tty, retenidos_vol=retenidos_vol, propiedades=propiedades, gas_rico_IN=gas_rico_IN, retenidos=retenidos, CAPACIDAD_EVACUACION_TTY=CAPACIDAD_EVACUACION_TTY)
-
-        new_retenidos = retenidos_TTY.T
-
-        new_retenidos.loc[PROPANO] = coef_corr_propano.loc[PROPANO].fillna(0)
-
-
-
-        for i in range(len(BUTANOS)):
-            new_retenidos.loc[BUTANOS[i]] = np.ravel(coef_corr_butanos)[i]
-
-
-        retenidos_planta_final = new_retenidos.T
-
-        tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=retenidos_planta_final)
-
-
-    # 3) y 4) Excedente que sigue sin entrar: primero derivo, despues bypaseo.
-    #    tabla_tty ya incluye las filas de derivacion ENTRANTE, entonces el
-    #    reparto se hace sobre el gas que efectivamente llega.
-    flujos = calcular_flujos_planta(
-        tabla_planta=tabla_tty,
-        retenidos_vol=retenidos_vol,
-        CAPACIDAD_EVACUACION_PLANTA=CAPACIDAD_EVACUACION_TTY,
+    flujos = repartir_flujo_planta(
+        vol_disponible=vol_disponible,
+        vol_maximo=vol_maximo,
         MAX_DERIVACION_PLANTA_A_PLANTA=MAX_DERIVACION_PLANTA_A_PLANTA,
-        factor_retenidos=factor_retenidos,
-        capacidad_libre_destino=capacidad_libre_destino,
     )
 
+    flujos['lgn_unitario'] = lgn_unitario
+    flujos['lgn_asignado'] = lgn_unitario * flujos['vol_asignado']
+    flujos['activa'] = activa
 
-    # 5) Retenidos sobre el gas realmente tratado. Por ser lineal en el volumen,
-    #    esto deja el LGN justo en la capacidad de evacuacion: converge en un
-    #    solo paso, no hace falta iterar.
-    if flujos['excedente'] > 0:
+    # Escalado pro-rata al volumen asignado. Volumen_relativo y la cromato no
+    # cambian: es el mismo gas, solo una porcion.
+    escala = (flujos['vol_asignado'] / vol_pool) if vol_pool else 0.0
 
-        comunes['vol_procesado'] = flujos['vol_procesado']
+    tabla_tty = tabla_pool.copy()
+    tabla_tty['Volumen_pool'] = tabla_pool['Volumen_inyectado']
+    tabla_tty['Volumen_inyectado'] = tabla_pool['Volumen_inyectado'] * escala
 
-        tabla_tty, gas_rico_IN, gas_residual_OUT,  retenidos, retenidos_vol = io_plantas(**comunes, retenidos_planta=retenidos_planta_final)
+    retenidos = retenidos_pool * escala
+    retenidos_vol = retenidos_vol_pool * escala
 
-
-    return {'tabla_total' : tabla_tty, 'gas_rico_IN' : gas_rico_IN, 'gas_residual_OUT' : gas_residual_OUT, 'retenidos' : retenidos, 'retenidos_vol' : retenidos_vol, 'flujos' : flujos, 'bypass' : flujos['bypass']}
+    return {
+        'tabla_total': tabla_tty,
+        'gas_rico_IN': gas_rico_IN,
+        'gas_residual_OUT': gas_residual_OUT,
+        'retenidos': retenidos,
+        'retenidos_vol': retenidos_vol,
+        'flujos': flujos,
+        'bypass': flujos['bypass'],
+    }

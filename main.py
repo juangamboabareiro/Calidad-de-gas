@@ -17,7 +17,7 @@ from pipeline.plantas.MEGA import modelar_MEGA
 from pipeline.plantas.TTY import modelar_TTY
 from outputs.writers import guardar
 from io_.loaders import load_flujos_directos, load_yacimientos, load_detalles_hubs, load_propiedades, load_plantas_yacimientos, load_matriz_inyecciones, load_premisas_areas, load_coefs_inyeccion_area, load_retenidos_rtp
-from pipeline.plantas.flujo_plantas import calcular_flujos_planta, calcular_DERIVACION
+from pipeline.plantas.flujo_plantas import calcular_DERIVACION
 
 
 
@@ -78,26 +78,31 @@ guardar(tabla_total_detalles_hubs, 'TBL_TTL_DH.csv')
 
 
 
-# region modelado de plantas + derivaciones
+# region modelado de plantas — CASCADA
 
 retenidos_TTY_DP = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'Dew point']
 retenidos_TTY_TBX = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'TBX']
 retenidos_MEGA = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'TBX MEGA']
 
 
-# Lo que limita no es el ingreso de gas (holgado) sino la EVACUACION DE LGN.
-# Y como el gas hay que tratarlo lo mas posible para comercializarlo, en cada
-# planta el orden es: corregir recuperacion -> derivar el excedente -> bypasear
-# solo lo que ni derivando entra. Ver calcular_flujos_planta.
+# TTY-DP y TTY-TBX son dos trenes sobre el MISMO pool de gas (la misma columna
+# de matriz_inyecciones), no dos plantas en paralelo. El pool se reparte en
+# cascada, y "llenarse" siempre significa agotar la capacidad de EVACUACION DE
+# LGN (el ingreso de gas rara vez limita, entra solo como min() adicional).
 #
-# La topologia de derivaciones es una CADENA sin ciclos:
+#   pre-PM  :  pool TTY --------------> DP --(sobra)--> MEGA --(sobra)--> bypass
+#              (TBX no esta en servicio)  \--(resto)--> bypass DP
 #
-#     TTY_TBX  --derivacion-->  TTY_DP  --derivacion-->  MEGA (no deriva)
+#   post-PM :  pool TTY --> TBX --(sobra)--> DP --(sobra)--> MEGA --(sobra)--> bypass
+#                            \--(resto)--> bypass TBX
 #
-# Por eso alcanza con modelar en ese orden, una sola pasada: cuando se modela
-# una planta, la derivacion que recibe ya esta calculada. La derivacion se pasa
-# a modelar_* y se inyecta como fila de input DENTRO de io_plantas (antes de
-# Volumen_relativo), asi el gas derivado entra en la mezcla de gas_rico_IN.
+# El traspaso TBX -> DP NO usa calcular_DERIVACION: los dos trenes comparten el
+# pool, entonces la cromato es identica y basta pasarle el volumen sobrante via
+# vol_disponible. La unica derivacion real es DP -> MEGA, donde el gas entra a un
+# pool de otra composicion y hay que sumarlo a la mezcla.
+
+
+TBX_EN_SERVICIO = config.PERIODO_CONSIDERADO >= config.FECHA_PM_TTY_TBX
 
 
 comunes = dict(
@@ -109,74 +114,71 @@ comunes = dict(
 )
 
 
-# 1) TTY-TBX: cabeza de la cadena, no recibe derivaciones.
+# 1) TTY-TBX: primer eslabon. Toma todo el pool y se llena; el sobrante pasa a DP
+#    hasta MAX_DERIVACION_TTY_TBX_A_TTY_DP, y lo que exceda ese tope es bypass.
+#    Pre-PM esta fuera de servicio (activa=False): no toma nada y deja pasar todo.
 TTY_TBX = modelar_TTY(**comunes,
                       retenidos_TTY=retenidos_TTY_TBX,
-                      CAPACIDAD_TTY=config.CAPACIDAD_TTY_TBX,
                       CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_TBX,
-                      MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_TBX_A_TTY_DP,
-                      factor_retenidos=config.FACTOR_RETENIDOS_TTY_TBX)
+                      CAPACIDAD_TTY=config.CAPACIDAD_TTY_TBX,
+                      MAX_DERIVACION_PLANTA_A_PLANTA=(
+                          config.MAX_DERIVACION_TTY_TBX_A_TTY_DP if TBX_EN_SERVICIO else float('inf')),
+                      activa=TBX_EN_SERVICIO)
 
 
-# 2) TTY-TBX -> TTY-DP
-derivacion_TTY_TBX_a_TTY_DP = calcular_DERIVACION(
-    flujos_origen=TTY_TBX['flujos'],
-    gas_rico_IN_origen=TTY_TBX['gas_rico_IN'],
-    nombre_origen='tty_tbx')
-
-
+# 2) TTY-DP: recibe el sobrante de TBX. Pre-PM eso es el pool completo, porque
+#    TBX no toma nada y su tope de traspaso es infinito (el gas va directo a DP).
 TTY_DP = modelar_TTY(**comunes,
                      retenidos_TTY=retenidos_TTY_DP,
-                     CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP,
                      CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_DP,
-                     derivaciones=[derivacion_TTY_TBX_a_TTY_DP],
-                     MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA,
-                     factor_retenidos=config.FACTOR_RETENIDOS_TTY_DP)
+                     CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP,
+                     vol_disponible=TTY_TBX['flujos']['vol_derivado'],
+                     MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA)
 
 
-# 3) TTY-DP -> MEGA
-# gas_rico_IN de TTY-DP ya incluye el aporte de TBX, entonces la cromato que
-# viaja a MEGA es la de la mezcla real. Con esto deja de hacer falta el
-# IF(derivacion_TTY_DP_CROMA = 0, gas_rico_IN_TTY_TBX, ...) del Excel.
+# 3) TTY-DP -> MEGA: aca si es derivacion, el gas entra a un pool de otra
+#    composicion y tiene que pesar en la mezcla de MEGA.
 derivacion_TTY_DP_a_MEGA = calcular_DERIVACION(
     flujos_origen=TTY_DP['flujos'],
     gas_rico_IN_origen=TTY_DP['gas_rico_IN'],
     nombre_origen='tty_dp')
 
 
-# MEGA: sin poder de derivacion, todo su excedente es bypass.
 MEGA = modelar_MEGA(**comunes,
                     retenidos_MEGA=retenidos_MEGA,
-                    CAPACIDAD_MEGA=config.CAPACIDAD_MEGA,
                     CAPACIDAD_EVACUACION_MEGA=config.CAPACIDAD_EVACUACION_MEGA,
-                    derivaciones=[derivacion_TTY_DP_a_MEGA],
-                    factor_retenidos=config.FACTOR_RETENIDOS_MEGA)
+                    CAPACIDAD_MEGA=config.CAPACIDAD_MEGA,
+                    derivaciones=[derivacion_TTY_DP_a_MEGA])
 
 
 tabla_tty_tbx = TTY_TBX['tabla_total']
 tabla_tty_dp = TTY_DP['tabla_total']
 tabla_mega = MEGA['tabla_total']
 
-print(tabla_mega[['Area', 'Volumen']])
+
+columnas_flujos = ['vol_disponible', 'vol_maximo', 'vol_asignado', 'sobrante',
+                   'vol_derivado', 'bypass', 'lgn_unitario', 'lgn_asignado', 'activa']
 
 flujos_plantas = pd.DataFrame({
     'TTY_TBX': TTY_TBX['flujos'],
     'TTY_DP': TTY_DP['flujos'],
     'MEGA': MEGA['flujos'],
-}).T[['vol_entrante', 'vol_procesado', 'vol_derivado', 'bypass', 'excedente', 'lgn_potencial', 'fraccion_tratable']]
+}).T.reindex(columns=columnas_flujos)
 
 
-# Balance por planta: vol_entrante == vol_procesado + vol_derivado + bypass, y
-# el vol_derivado de una aparece dentro del vol_entrante de la siguiente.
-# OJO: sum(tabla_*) SI se solapa entre plantas, porque la tabla del destino
-# incluye la fila de derivacion. Para totalizar volumen usar flujos_plantas;
-# las tabla_* sirven para composiciones.
-_chequeo_balance = (
-    flujos_plantas['vol_entrante']
-    - flujos_plantas[['vol_procesado', 'vol_derivado', 'bypass']].sum(axis=1)
+# Balance por eslabon: vol_disponible == vol_asignado + vol_derivado + bypass.
+# El vol_derivado de un eslabon es el vol_disponible del siguiente, entonces la
+# cadena cierra sin doble conteo. OJO: sum(tabla_mega) incluye la fila de
+# derivacion de DP, asi que no se puede sumar con sum(tabla_tty_dp).
+_desvio = (
+    flujos_plantas['vol_disponible']
+    - flujos_plantas[['vol_asignado', 'vol_derivado', 'bypass']].sum(axis=1)
 ).abs().max()
 
-assert _chequeo_balance < 1e-6, f'El balance por planta no cierra: {_chequeo_balance}'
+assert _desvio < 1e-6, f'El balance por eslabon no cierra: {_desvio}'
+
+print(f"TBX en servicio: {TBX_EN_SERVICIO}")
+print(flujos_plantas)
 
 # endregion
 
