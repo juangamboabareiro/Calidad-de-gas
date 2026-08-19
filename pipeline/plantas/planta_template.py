@@ -28,7 +28,20 @@ def _fila_derivacion(derivacion, compuestos):
     return fila
 
 
-def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, compuestos, retenidos_planta, nombre_planta, derivaciones=None):
+def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, compuestos, retenidos_planta, nombre_planta, derivaciones=None, vol_procesado=None):
+    """Arma la tabla de input de una planta y calcula gas rico / residual / retenidos.
+
+    vol_procesado : float | None
+        Volumen sobre el que se calculan los RETENIDOS. Si es None se usa todo
+        el volumen entrante: eso da el LGN POTENCIAL, el que la planta produciria
+        si pudiera tratar todo, y es lo que se compara contra la capacidad de
+        evacuacion para saber si hay excedente.
+        Si se pasa (flujos['vol_procesado'] de calcular_flujos_planta), los
+        retenidos salen sobre el gas realmente tratado, o sea descontando lo
+        derivado y lo bypaseado.
+        La mezcla (gas_rico_IN) NO cambia en ninguno de los dos casos: se asume
+        que lo que se deriva o bypasea tiene la cromato promedio de entrada.
+    """
 
     tabla_plantas = pd.DataFrame()
     tabla_plantas['Area'] = matriz_inyecciones[nombre_planta]
@@ -62,7 +75,9 @@ def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direct
     gas_residual_OUT = gas_rico_IN * (1 - retenidos_planta)
 
 
-    retenidos = calcular_retenidos(propiedades, tabla_plantas['Volumen_inyectado'].sum(), retenidos_planta, gas_rico_IN, PRESION_BASE, CONSTANTE_GAS, TEMPERATURA_BASE).T
+    volumen_tratado = tabla_plantas['Volumen_inyectado'].sum() if vol_procesado is None else vol_procesado
+
+    retenidos = calcular_retenidos(propiedades, volumen_tratado, retenidos_planta, gas_rico_IN, PRESION_BASE, CONSTANTE_GAS, TEMPERATURA_BASE).T
 
 
     etano_retenido = retenidos.loc[ETANO].sum()

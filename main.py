@@ -17,7 +17,7 @@ from pipeline.plantas.MEGA import modelar_MEGA
 from pipeline.plantas.TTY import modelar_TTY
 from outputs.writers import guardar
 from io_.loaders import load_flujos_directos, load_yacimientos, load_detalles_hubs, load_propiedades, load_plantas_yacimientos, load_matriz_inyecciones, load_premisas_areas, load_coefs_inyeccion_area, load_retenidos_rtp
-from pipeline.plantas.flujo_plantas import calcular_BYPASS, calcular_DERIVACION
+from pipeline.plantas.flujo_plantas import calcular_flujos_planta, calcular_DERIVACION
 
 
 
@@ -85,21 +85,19 @@ retenidos_TTY_TBX = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'TBX']
 retenidos_MEGA = retenidos_RTP[COMPUESTOS][retenidos_RTP['Planta'] == 'TBX MEGA']
 
 
+# Lo que limita no es el ingreso de gas (holgado) sino la EVACUACION DE LGN.
+# Y como el gas hay que tratarlo lo mas posible para comercializarlo, en cada
+# planta el orden es: corregir recuperacion -> derivar el excedente -> bypasear
+# solo lo que ni derivando entra. Ver calcular_flujos_planta.
+#
 # La topologia de derivaciones es una CADENA sin ciclos:
 #
-#     TTY_TBX  --derivacion-->  TTY_DP  --derivacion-->  MEGA
+#     TTY_TBX  --derivacion-->  TTY_DP  --derivacion-->  MEGA (no deriva)
 #
 # Por eso alcanza con modelar en ese orden, una sola pasada: cuando se modela
-# una planta, la derivacion que recibe ya esta calculada. No hace falta iterar
-# ni re-modelar nada. La derivacion se pasa a modelar_* y se inyecta como fila
-# de input DENTRO de io_plantas (antes de Volumen_relativo), asi el gas derivado
-# entra en la mezcla que forma gas_rico_IN.
-#
-# NOTA sobre el codigo anterior: se modelaba primero, se hacia
-# tabla.loc[len(tabla)] = {...} sobre la tabla devuelta, y despues se volvia a
-# llamar a modelar_*. Ese re-modelado reconstruye la tabla desde
-# tabla_total_flujos_directos, entonces la fila agregada quedaba huerfana: la
-# derivacion no impactaba en ningun resultado.
+# una planta, la derivacion que recibe ya esta calculada. La derivacion se pasa
+# a modelar_* y se inyecta como fila de input DENTRO de io_plantas (antes de
+# Volumen_relativo), asi el gas derivado entra en la mezcla de gas_rico_IN.
 
 
 comunes = dict(
@@ -115,15 +113,15 @@ comunes = dict(
 TTY_TBX = modelar_TTY(**comunes,
                       retenidos_TTY=retenidos_TTY_TBX,
                       CAPACIDAD_TTY=config.CAPACIDAD_TTY_TBX,
-                      CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_TBX)
+                      CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_TBX,
+                      MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_TBX_A_TTY_DP,
+                      factor_retenidos=config.FACTOR_RETENIDOS_TTY_TBX)
 
 
 # 2) TTY-TBX -> TTY-DP
 derivacion_TTY_TBX_a_TTY_DP = calcular_DERIVACION(
-    tabla_planta_origen=TTY_TBX['tabla_total'],
+    flujos_origen=TTY_TBX['flujos'],
     gas_rico_IN_origen=TTY_TBX['gas_rico_IN'],
-    CAPACIDAD_EVACUACION_PLANTA=config.CAPACIDAD_EVACUACION_TTY_TBX,
-    MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_TBX_A_TTY_DP,
     nombre_origen='tty_tbx')
 
 
@@ -131,7 +129,9 @@ TTY_DP = modelar_TTY(**comunes,
                      retenidos_TTY=retenidos_TTY_DP,
                      CAPACIDAD_TTY=config.CAPACIDAD_TTY_DP,
                      CAPACIDAD_EVACUACION_TTY=config.CAPACIDAD_EVACUACION_TTY_DP,
-                     derivaciones=[derivacion_TTY_TBX_a_TTY_DP])
+                     derivaciones=[derivacion_TTY_TBX_a_TTY_DP],
+                     MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA,
+                     factor_retenidos=config.FACTOR_RETENIDOS_TTY_DP)
 
 
 # 3) TTY-DP -> MEGA
@@ -139,18 +139,18 @@ TTY_DP = modelar_TTY(**comunes,
 # viaja a MEGA es la de la mezcla real. Con esto deja de hacer falta el
 # IF(derivacion_TTY_DP_CROMA = 0, gas_rico_IN_TTY_TBX, ...) del Excel.
 derivacion_TTY_DP_a_MEGA = calcular_DERIVACION(
-    tabla_planta_origen=TTY_DP['tabla_total'],
+    flujos_origen=TTY_DP['flujos'],
     gas_rico_IN_origen=TTY_DP['gas_rico_IN'],
-    CAPACIDAD_EVACUACION_PLANTA=config.CAPACIDAD_EVACUACION_TTY_DP,
-    MAX_DERIVACION_PLANTA_A_PLANTA=config.MAX_DERIVACION_TTY_DP_A_MEGA,
     nombre_origen='tty_dp')
 
 
+# MEGA: sin poder de derivacion, todo su excedente es bypass.
 MEGA = modelar_MEGA(**comunes,
                     retenidos_MEGA=retenidos_MEGA,
                     CAPACIDAD_MEGA=config.CAPACIDAD_MEGA,
                     CAPACIDAD_EVACUACION_MEGA=config.CAPACIDAD_EVACUACION_MEGA,
-                    derivaciones=[derivacion_TTY_DP_a_MEGA])
+                    derivaciones=[derivacion_TTY_DP_a_MEGA],
+                    factor_retenidos=config.FACTOR_RETENIDOS_MEGA)
 
 
 tabla_tty_tbx = TTY_TBX['tabla_total']
@@ -158,17 +158,24 @@ tabla_tty_dp = TTY_DP['tabla_total']
 tabla_mega = MEGA['tabla_total']
 
 
-# TODO (signos): el volumen derivado se SUMA en la planta destino pero todavia
-# no se RESTA en la planta origen, entonces
-#   sum(tabla_tty_tbx) + sum(tabla_tty_dp) + sum(tabla_mega)
-# ya no cierra contra la inyeccion total: el gas derivado se cuenta dos veces.
-# Si hay que descontarlo, el lugar es un argumento vol_derivado_saliente en
-# modelar_TTY que prorratee el descuento entre las filas del origen, calculado
-# despues de la derivacion para mantener la pasada unica.
-#
-# TODO (bypass vs derivacion): hoy BYPASS se calcula sobre el volumen que llega
-# (post-derivacion entrante) pero sin descontar lo que la planta deriva hacia
-# afuera. Definir la prioridad: derivar primero y bypasear el resto, o al reves.
+flujos_plantas = pd.DataFrame({
+    'TTY_TBX': TTY_TBX['flujos'],
+    'TTY_DP': TTY_DP['flujos'],
+    'MEGA': MEGA['flujos'],
+}).T[['vol_entrante', 'vol_procesado', 'vol_derivado', 'bypass', 'excedente', 'lgn_potencial', 'fraccion_tratable']]
+
+
+# Balance por planta: vol_entrante == vol_procesado + vol_derivado + bypass, y
+# el vol_derivado de una aparece dentro del vol_entrante de la siguiente.
+# OJO: sum(tabla_*) SI se solapa entre plantas, porque la tabla del destino
+# incluye la fila de derivacion. Para totalizar volumen usar flujos_plantas;
+# las tabla_* sirven para composiciones.
+_chequeo_balance = (
+    flujos_plantas['vol_entrante']
+    - flujos_plantas[['vol_procesado', 'vol_derivado', 'bypass']].sum(axis=1)
+).abs().max()
+
+assert _chequeo_balance < 1e-6, f'El balance por planta no cierra: {_chequeo_balance}'
 
 # endregion
 
