@@ -12,7 +12,8 @@ from pipeline.plantas.flujo_plantas import calcular_flujos_planta, calcular_DERI
 
 
 
-def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_MEGA, CAPACIDAD_MEGA, CAPACIDAD_EVACUACION_MEGA, derivaciones=None, factor_retenidos=1/1000, capacidad_libre_destino=None):
+# antes: factor_retenidos=1/1000
+def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_MEGA, CAPACIDAD_MEGA, CAPACIDAD_EVACUACION_MEGA, derivaciones=None, factor_retenidos=1.0, capacidad_libre_destino=None):
     """Modela MEGA.
 
     MEGA no tiene poder de derivacion: es la ultima planta de la cadena, entonces

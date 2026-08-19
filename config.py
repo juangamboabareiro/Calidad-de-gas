@@ -29,9 +29,19 @@ MAX_DERIVACION_TTY_DP_A_MEGA = 5
 MAX_DERIVACION_TTY_TBX_A_TTY_DP = CAPACIDAD_TTY_DP - CAPACIDAD_BASE_CONVERTIBLE_TBX
 
 
-FACTOR_RETENIDOS_TTY_DP = 1.0        # se comparaba el crudo contra 200
-FACTOR_RETENIDOS_TTY_TBX = 1.0       # REVISAR: 7700 parece bbl/d, ver abajo
-FACTOR_RETENIDOS_MEGA = 1/1000
+
+FACTOR_RETENIDOS_TTY_DP  = 1.0
+FACTOR_RETENIDOS_TTY_TBX = 1.0
+FACTOR_RETENIDOS_MEGA    = 1.0    # antes /1000: asumia retenidos en kg/d
+
+# Cuantas unidades de Volumen_inyectado hay en 1 MMm3/d.
+# CONFIRMAR: las capacidades de ingreso estan en MMm3/d (28, 34, 43) pero
+# Volumen_inyectado viene de los inputs en otra escala.
+FACTOR_MMm3_A_UNIDAD_VOLUMEN = 1000.0
+
+MAX_DERIVACION_TTY_DP_A_MEGA    = 5 * FACTOR_MMm3_A_UNIDAD_VOLUMEN
+MAX_DERIVACION_TTY_TBX_A_TTY_DP = (CAPACIDAD_TTY_DP - CAPACIDAD_BASE_CONVERTIBLE_TBX) * FACTOR_MMm3_A_UNIDAD_VOLUMEN
+
 
 
 
