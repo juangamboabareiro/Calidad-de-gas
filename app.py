@@ -58,6 +58,8 @@ from io_.loaders import (
     load_plantas_yacimientos,
     load_matriz_inyecciones,
 )
+from ui.esquemas import mostrar_esquema_planta
+from ui.tablas import panel_tablas
 from domain.propiedades_gas import calcular_propiedades_gas, calcular_retenidos
 from pipeline.inyeccion_std import calcular_inyeccion_std
 from pipeline.inyeccion_area import calcular_inyeccion, calcular_inyeccion_area
@@ -189,95 +191,6 @@ def _kpi_planta(nombre_planta: str, datos: dict):
         st.success(f"✅ **{nombre_planta}** trata todo el gas que le llega.")
 
 
-def _svg_esquema_planta(
-    nombre_planta: str,
-    color_planta: str = "#5DADE2",
-    flujo_in=None,
-    flujo_in_eq=None,
-    flujo_out=None,
-    flujo_out_eq=None,
-    bypass=None,
-    bypass_eq=None,
-    derivacion_in=None,
-    derivacion_out=None,
-    rtp=None,
-    liq_total=None,
-    etano=None,
-    propano=None,
-    butanos=None,
-    gasolina=None,
-    ratio_in_out=None,
-) -> str:
-    """Esquema tipo diagrama de bloques de la planta (IN / OUT / ByPass /
-    traspasos / LGN / Ratio), en el estilo de la lámina de referencia."""
-    return f"""
-    <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg"
-         style="width:100%; max-width:700px; font-family:Arial, sans-serif;">
-
-      <text x="230" y="25" font-size="15" font-weight="bold" fill="#1a1a1a">Liq. total</text>
-      <text x="330" y="25" font-size="15" font-weight="bold" fill="#1a1a1a">{_fmt(liq_total)} tn/d</text>
-
-      <text x="255" y="48" font-size="13" fill="#1a1a1a">Etano</text>
-      <text x="330" y="48" font-size="13" fill="#1a1a1a">{_fmt(etano)} tn/d</text>
-
-      <text x="255" y="68" font-size="13" fill="#1a1a1a">Propano</text>
-      <text x="330" y="68" font-size="13" fill="#1a1a1a">{_fmt(propano)} tn/d</text>
-
-      <text x="255" y="88" font-size="13" fill="#1a1a1a">Butanos</text>
-      <text x="330" y="88" font-size="13" fill="#1a1a1a">{_fmt(butanos)} tn/d</text>
-
-      <text x="255" y="108" font-size="13" fill="#1a1a1a">Gasolina</text>
-      <text x="330" y="108" font-size="13" fill="#1a1a1a">{_fmt(gasolina)} tn/d</text>
-
-      <text x="490" y="48" font-size="13" font-weight="bold" fill="#1a1a1a">
-        RTP = {_fmt(rtp)} tn/d
-      </text>
-
-      <line x1="235" y1="120" x2="235" y2="30" stroke="#1a1a1a" stroke-width="2" marker-end="url(#arrow)"/>
-
-      <rect x="190" y="120" width="260" height="120" fill="{color_planta}" stroke="#1a1a1a" stroke-width="1.5"/>
-      <text x="320" y="185" font-size="16" font-weight="bold" text-anchor="middle" fill="#0b2545">
-        {nombre_planta.upper()}
-      </text>
-
-      <line x1="20" y1="150" x2="188" y2="150" stroke="#1a1a1a" stroke-width="4" marker-end="url(#arrow)"/>
-      <text x="20" y="140" font-size="13" font-weight="bold" fill="#1a1a1a">{_fmt(flujo_in, 2)} MMm3/d</text>
-      <text x="20" y="168" font-size="12" fill="#2c3e50">{_fmt(flujo_in_eq, 2)} MMm3eq/d</text>
-
-      <line x1="452" y1="150" x2="620" y2="150" stroke="#1a1a1a" stroke-width="4" marker-end="url(#arrow)"/>
-      <text x="500" y="140" font-size="13" font-weight="bold" fill="#1a1a1a">{_fmt(flujo_out, 2)} MMm3/d</text>
-      <text x="500" y="168" font-size="12" fill="#2c3e50">{_fmt(flujo_out_eq, 2)} MMm3eq/d</text>
-
-      <text x="180" y="112" font-size="12" fill="#1b5e20">
-        Recibe: {_fmt(derivacion_in, 2)} MMm3/d
-      </text>
-      <text x="452" y="112" font-size="12" fill="#1b5e20">
-        Pasa al siguiente: {_fmt(derivacion_out, 2)} MMm3/d
-      </text>
-
-      <text x="10" y="255" font-size="12" font-weight="bold" fill="#1a1a1a">ByPass</text>
-      <text x="70" y="278" font-size="12" font-weight="bold" fill="#1a1a1a">{_fmt(bypass, 2)} MMm3/d</text>
-      <text x="70" y="296" font-size="12" fill="#2c3e50">{_fmt(bypass_eq, 2)} MMm3eq/d</text>
-
-      <line x1="360" y1="255" x2="70" y2="255" stroke="#1a1a1a" stroke-width="2"
-            stroke-dasharray="4,4" marker-end="url(#arrow)"/>
-      <line x1="20" y1="255" x2="20" y2="330" stroke="#1a1a1a" stroke-width="2" stroke-dasharray="4,4"/>
-      <line x1="20" y1="330" x2="620" y2="330" stroke="#1a1a1a" stroke-width="2"
-            stroke-dasharray="4,4" marker-end="url(#arrow)"/>
-      <text x="260" y="345" font-size="12" fill="#2c3e50">{_fmt(bypass_eq, 2)} MMm3eq/d</text>
-
-      <rect x="230" y="365" width="240" height="28" fill="white" stroke="#1a1a1a" stroke-width="1.2"/>
-      <text x="250" y="384" font-size="13" fill="#1a1a1a">Ratio IN / OUT</text>
-      <text x="380" y="384" font-size="13" font-weight="bold" fill="#1a1a1a">{_fmt(ratio_in_out, 3)}</text>
-      <text x="440" y="384" font-size="11" fill="#2c3e50">m3std/m3std</text>
-
-      <defs>
-        <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
-          <path d="M0,0 L8,4 L0,8 Z" fill="#1a1a1a"/>
-        </marker>
-      </defs>
-    </svg>
-    """
 
 
 def _armar_esquema(datos: dict) -> dict:
@@ -316,6 +229,8 @@ def _armar_esquema(datos: dict) -> dict:
         "butanos": butanos,
         "gasolina": gasolina,
         "ratio_in_out": (vol_in_mm / vol_out_mm) if vol_out_mm else None,
+        
+        
     }
 
 
@@ -787,9 +702,7 @@ with tab_cascada:
     st.graphviz_chart(_dot_cascada(plantas, tbx_en_servicio_res), use_container_width=True)
 
 with tab_tablas:
-    for nombre, df in resultados["tablas"].items():
-        _mostrar_tabla(nombre, df, key_prefix="tablas")
-        st.divider()
+    panel_tablas(resultados)
 
 with tab_red:
     st.subheader("Red de gasoductos hacia las plantas")
@@ -806,13 +719,11 @@ def _mostrar_planta(tab, nombre_planta, datos):
         st.divider()
 
         st.markdown("**Esquema de la planta**")
-        st.markdown(
-            _svg_esquema_planta(
-                nombre_planta=nombre_planta,
-                color_planta=datos.get("color", "#5DADE2"),
-                **_armar_esquema(datos),
-            ),
-            unsafe_allow_html=True,
+        mostrar_esquema_planta(
+            nombre_planta=nombre_planta,
+            color_planta=datos.get("color", "#5DADE2"),
+            activa=datos["flujos"].get("activa", True),
+            **_armar_esquema(datos),
         )
         st.divider()
 
