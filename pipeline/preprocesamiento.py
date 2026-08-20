@@ -11,9 +11,13 @@ from domain.ctes_gas import COMPUESTOS
 
 def preprocesar_inputs(flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos):
 
+
     matriz_inyecciones = load_matriz_inyecciones(PATH_INPUTS)
     coefs_inyeccion_area = load_coefs_inyeccion_area(PATH_INPUTS)
     premisas_areas = load_premisas_areas(PATH_INPUTS)
+
+    detalles_hubs["Area"] = normalizar_serie(detalles_hubs["Area"])
+    flujos_directos["Area"] = normalizar_serie(flujos_directos["Area"])
 
     flujos_directos = flujos_directos.fillna(0)
     yacimientos = yacimientos.fillna(0)

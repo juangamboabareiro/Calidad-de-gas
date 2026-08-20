@@ -1,13 +1,46 @@
-from domain.normalizacion import normalizar
+"""
+Detalle de HUBs (hoja Detalles-HUBs).
 
-def calcular_inyeccion_detalles_hubs(detalles_hubs, plantas_yacimientos):
+A diferencia de yacimientos y flujos_directos, aca no se calcula ninguna
+inyeccion: la tabla ya viene con los volumenes y lo unico que se hace es
+etiquetar cada area con su HUB. El nombre de la funcion lo refleja.
+"""
 
-    detalles_hubs["Area"] = detalles_hubs["Area"].apply(normalizar)
+from __future__ import annotations
 
-    detalles_hubs_areas = detalles_hubs.merge(plantas_yacimientos, on = "Area", how="left")
+import pandas as pd
 
-    detalles_hubs_areas['HUB'] = detalles_hubs_areas['HUB'].fillna("Otros")
+from pipeline.comunes import agregar_hub
 
-    inyeccion_detalles_hubs_areas = detalles_hubs_areas
 
-    return inyeccion_detalles_hubs_areas
+def calcular_detalles_hubs_areas(
+    detalles_hubs: pd.DataFrame,
+    plantas_yacimientos: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Agrega la columna HUB a la tabla de detalles.
+
+    Parameters
+    ----------
+    detalles_hubs : pandas.DataFrame
+        Hoja Detalles-HUBs ya preprocesada (Area normalizada en
+        `preprocesamiento`, no aca).
+    plantas_yacimientos : pandas.DataFrame
+        Diccionario Area -> HUB.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copia de la entrada con la columna HUB. Las areas sin HUB conocido
+        quedan como HUB_DEFAULT ("Otros").
+    """
+    return agregar_hub(
+        detalles_hubs.copy(),
+        plantas_yacimientos,
+        nombre="detalles_hubs_areas",
+    )
+
+
+# Alias temporal para no romper imports viejos mientras migras main.py.
+# Borralo cuando termines de actualizar las llamadas.
+calcular_inyeccion_detalles_hubs = calcular_detalles_hubs_areas

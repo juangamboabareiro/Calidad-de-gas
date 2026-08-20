@@ -75,7 +75,7 @@ def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direct
 
     gas_residual_OUT = gas_rico_IN * (1 - retenidos_planta)
 
-
+    
     retenidos = calcular_retenidos(propiedades, tabla_plantas['Volumen_inyectado'].sum(), retenidos_planta, gas_rico_IN, PRESION_BASE, CONSTANTE_GAS, TEMPERATURA_BASE).T
 
 

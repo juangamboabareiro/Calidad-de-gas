@@ -9,7 +9,7 @@ from pipeline.inyeccion_std import calcular_inyeccion_std
 from io_.loaders import load_inyeccion_9300, load_coeficientes, load_retenidos_rtp
 from pipeline.inyeccion_area import calcular_inyeccion_area, calcular_inyeccion
 from pipeline.yacimientos import calcular_inyeccion_yacimientos_areas
-from pipeline.detalles_hubs import calcular_inyeccion_detalles_hubs
+from pipeline.detalles_hubs import calcular_detalles_hubs_areas
 from pipeline.flujos_directos import calcular_inyeccion_flujos_directos
 from pipeline.tabla_total import calcular_tabla_total_yacimientos, calcular_tabla_total_flujos_directos, calcular_tabla_total_detalles_hubs
 from domain.propiedades_gas import calcular_propiedades_gas, calcular_retenidos
@@ -56,13 +56,15 @@ inyeccion_std = calcular_inyeccion_std(inyeccion_9300, coeficientes)
 inyeccion = calcular_inyeccion(inyeccion_std, plantas_yacimientos)
 inyeccion_area = calcular_inyeccion_area(inyeccion, matriz_inyecciones)
 
-inyeccion_yacimientos_areas = calcular_inyeccion_yacimientos_areas(yacimientos, plantas_yacimientos, inyeccion_area)
-inyeccion_detalles_hubs = calcular_inyeccion_detalles_hubs(detalles_hubs, plantas_yacimientos)
-inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(flujos_directos, matriz_inyecciones)
+yacimientos_areas, inyeccion_yacimientos_areas = calcular_inyeccion_yacimientos_areas(
+    yacimientos=yacimientos, plantas_yacimientos=plantas_yacimientos, inyeccion_area=inyeccion_area)
+detalles_hubs_areas = calcular_detalles_hubs_areas(detalles_hubs, plantas_yacimientos)
+inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(flujos_directos)
+
 
 tabla_total_yacimientos = calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area, premisas_areas, config.PERIODO_CONSIDERADO, COMPUESTOS)
 tabla_total_flujos_directos = calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyeccion_area, premisas_areas, config.PERIODO_CONSIDERADO, COMPUESTOS)
-tabla_total_detalles_hubs = calcular_tabla_total_detalles_hubs(inyeccion_detalles_hubs, premisas_areas)
+tabla_total_detalles_hubs = calcular_tabla_total_detalles_hubs(detalles_hubs_areas, premisas_areas)
 
 tabla_total_yacimientos = calcular_propiedades_gas(tabla_total_yacimientos, propiedades, COMPUESTOS, PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, DENSIDAD_AIRE, CONVERSION)
 tabla_total_flujos_directos = calcular_propiedades_gas(tabla_total_flujos_directos, propiedades, COMPUESTOS, PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, DENSIDAD_AIRE, CONVERSION)
