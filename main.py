@@ -209,3 +209,24 @@ print(flujos_plantas)
 red_gasoductos = pd.DataFrame(columns=["origen", "destino", "valor"])
 
 red_gasoductos[["origen", "destino", "valor"]] = tabla_total_yacimientos[['Area', 'Gasoducto', 'Volumen_inyectado']]
+
+
+iny = inyeccion_9300.set_index(["Area", "Cuenca"])
+coef = coeficientes.set_index("Area")
+coef_al = coef.reindex(iny.index.get_level_values("Area"))
+coef_al.index = iny.index
+
+print("celdas totales:      ", iny.size)
+print("vacías en el origen: ", iny.isna().sum().sum())
+print("coef = 0:            ", ((coef_al == 0) & iny.notna()).sum().sum())
+print("coef ausente:        ", (coef_al.isna() & iny.notna()).sum().sum())
+print("áreas equivalentes:  ", 3494 / (iny.shape[1]))
+
+
+perdido = iny[(coef_al == 0) & iny.notna() & (iny != 0)]
+print(perdido.sum().sum())
+
+
+gasoductos = {g for g in inyeccion_area["Gasoducto"].dropna() if isinstance(g, str)}
+print(sorted(gasoductos - set(yacimientos.columns)))
+print(sorted(c for c in yacimientos.columns if isinstance(c, str)))
