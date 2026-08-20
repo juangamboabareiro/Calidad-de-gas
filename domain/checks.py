@@ -32,6 +32,7 @@ def merge_validado(
     validate: str | None = None,
     mostrar_ejemplos: int = 5,
     col_ejemplo: str | None = None,
+    reportar: bool | None = None,
     **kwargs,
 ) -> pd.DataFrame:
     """
@@ -55,6 +56,10 @@ def merge_validado(
     col_ejemplo : str | None
         De que columna sacar los ejemplos. Por defecto usa la primera
         clave de cruce.
+    reportar : bool | None
+        Silencia o fuerza el reporte solo para esta llamada. Sirve para los
+        merges donde las filas sin match son esperables y su ruido tapa a los
+        merges que si importan. None = usar el VERBOSE del modulo.
     **kwargs
         `on`, `left_on`, `right_on`, `suffixes`, etc.
 
@@ -73,15 +78,18 @@ def merge_validado(
         **kwargs,
     )
 
-    if VERBOSE:
-        filas_despues = len(resultado)
+    filas_despues = len(resultado)
 
-        if filas_despues != filas_antes:
-            print(
-                f"[{nombre}] filas {filas_antes} -> {filas_despues} "
-                f"(diferencia: {filas_despues - filas_antes:+d})"
-            )
+    # Un cambio en la cantidad de filas NUNCA es esperable en estos merges:
+    # significa duplicacion. Se avisa siempre, aunque el llamador silencie
+    # el resto.
+    if VERBOSE and filas_despues != filas_antes:
+        print(
+            f"[{nombre}] OJO filas {filas_antes} -> {filas_despues} "
+            f"(diferencia: {filas_despues - filas_antes:+d})"
+        )
 
+    if VERBOSE if reportar is None else reportar:
         sin_match = resultado["_origen"] == "left_only"
 
         if sin_match.any():

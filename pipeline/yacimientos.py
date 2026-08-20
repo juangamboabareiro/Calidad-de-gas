@@ -95,7 +95,10 @@ def calcular_inyeccion_yacimientos_areas(
         how="left",
         validate="m:1",   # una fila por (Area, Gasoducto) del lado derecho
         col_ejemplo=COL_AREA,
+        reportar=False,   # el reporte crudo mezcla dos casos: ver abajo
     )
+
+    _reportar_sin_inyeccion(inyeccion_yacimientos_areas, yacimientos_largo)
 
     # La hoja Yacimientos ES la inyeccion primaria por definicion: lo que no
     # trae etiqueta se rotula asi, no es un dato faltante.
@@ -108,3 +111,45 @@ def calcular_inyeccion_yacimientos_areas(
     )
 
     return yacimientos_areas, inyeccion_yacimientos_areas
+
+
+def _reportar_sin_inyeccion(
+    inyeccion_yacimientos_areas: pd.DataFrame,
+    yacimientos_largo: pd.DataFrame,
+) -> None:
+    """
+    Distingue los dos motivos por los que una fila puede quedar sin volumen.
+
+    Caso esperable
+        El area no figura en la hoja Yacimientos porque no tiene inyeccion
+        primaria (Acambuco, Aguarague, etc.). Volumen 0 es el dato correcto
+        y la fila se conserva para que el area siga apareciendo en la tabla.
+
+    Caso sospechoso
+        El area SI esta en la hoja Yacimientos, pero no para ese gasoducto.
+        Puede ser legitimo, o puede ser un gasoducto mal escrito / un dato
+        que falta. Ahi el fillna(0) borraria volumen real, asi que se avisa.
+
+    Llamar ANTES del fillna, mientras los faltantes todavia son NaN.
+    """
+    areas_con_inyeccion = set(yacimientos_largo[COL_AREA].dropna())
+
+    faltantes = inyeccion_yacimientos_areas[COL_VOLUMEN].isna()
+
+    if not faltantes.any():
+        return
+
+    filas = inyeccion_yacimientos_areas.loc[faltantes]
+
+    esperables = filas[~filas[COL_AREA].isin(areas_con_inyeccion)]
+    sospechosas = filas[filas[COL_AREA].isin(areas_con_inyeccion)]
+
+    print(
+        f"[yacimientos] {filas[COL_AREA].nunique()} areas sin volumen: "
+        f"{esperables[COL_AREA].nunique()} sin inyeccion primaria (ok), "
+        f"{sospechosas[COL_AREA].nunique()} con inyeccion pero sin ese gasoducto"
+    )
+
+    if len(sospechosas):
+        print("[yacimientos] revisar pares (Area, Gasoducto):")
+        print(sospechosas[[COL_AREA, COL_GASODUCTO]].drop_duplicates().head(15))

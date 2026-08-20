@@ -18,6 +18,7 @@ def agregar_hub(
     plantas_yacimientos: pd.DataFrame,
     *,
     nombre: str = "agregar_hub",
+    reportar: bool | None = None,
 ) -> pd.DataFrame:
     """
     Agrega la columna HUB cruzando por Area.
@@ -32,6 +33,9 @@ def agregar_hub(
         Diccionario Area -> HUB. Debe tener una fila por area.
     nombre : str
         Etiqueta para los mensajes de diagnostico.
+    reportar : bool | None
+        Poner en False cuando las filas sin HUB son esperables y su ruido
+        tapa a los merges donde un sin-match si seria un error.
 
     Returns
     -------
@@ -46,6 +50,7 @@ def agregar_hub(
         how="left",
         validate="m:1",          # una sola fila por area del lado derecho
         col_ejemplo=COL_AREA,
+        reportar=reportar,
     )
 
     salida[COL_HUB] = salida[COL_HUB].fillna(HUB_DEFAULT)
