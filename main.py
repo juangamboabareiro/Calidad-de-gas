@@ -44,7 +44,22 @@ plantas_yacimientos = load_plantas_yacimientos(config.PATH_INPUTS)
 
 # region preprocesamiento de datos
 
-flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos, matriz_inyecciones, coefs_inyeccion_area, premisas_areas = preprocesar_inputs(flujos_directos=flujos_directos, yacimientos=yacimientos, detalles_hubs=detalles_hubs, propiedades=propiedades, plantas_yacimientos=plantas_yacimientos)
+inputs = preprocesar_inputs(
+    flujos_directos=flujos_directos,
+    yacimientos=yacimientos,
+    detalles_hubs=detalles_hubs,
+    propiedades=propiedades,
+    plantas_yacimientos=plantas_yacimientos,
+)
+
+flujos_directos      = inputs["flujos_directos"]
+yacimientos          = inputs["yacimientos"]
+detalles_hubs        = inputs["detalles_hubs"]
+propiedades          = inputs["propiedades"]
+plantas_yacimientos  = inputs["plantas_yacimientos"]
+matriz_inyecciones   = inputs["matriz_inyecciones"]
+coefs_inyeccion_area = inputs["coefs_inyeccion_area"]
+premisas_areas       = inputs["premisas_areas"]
 
 # endregion
 
@@ -57,8 +72,13 @@ inyeccion = calcular_inyeccion(inyeccion_std, plantas_yacimientos)
 inyeccion_area = calcular_inyeccion_area(inyeccion, matriz_inyecciones)
 
 yacimientos_areas, inyeccion_yacimientos_areas = calcular_inyeccion_yacimientos_areas(
-    yacimientos=yacimientos, plantas_yacimientos=plantas_yacimientos, inyeccion_area=inyeccion_area)
+    yacimientos=yacimientos,
+    plantas_yacimientos=plantas_yacimientos,
+    inyeccion_area=inyeccion_area,
+)
+
 detalles_hubs_areas = calcular_detalles_hubs_areas(detalles_hubs, plantas_yacimientos)
+
 inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(flujos_directos)
 
 

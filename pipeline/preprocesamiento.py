@@ -1,61 +1,184 @@
+"""
+Preparacion de los inputs crudos antes del pipeline de calculo.
+
+Que quedo y que se fue
+----------------------
+Se fue toda la normalizacion de Area: ahora la hacen los loaders, que es el
+unico borde por donde entran los datos. Si una tabla llega aca, su clave ya
+es confiable.
+
+Queda el relleno de nulos y los cambios de forma (melt, set_index) que no son
+calculo de negocio pero tampoco son lectura.
+
+Cada tabla tiene su propia funcion. Antes era un solo bloque de 40 lineas que
+devolvia 8 valores posicionales: si algun dia habia que reordenarlos, se
+rompia todo en silencio.
+"""
+
+from __future__ import annotations
+
 import pandas as pd
-import numpy as np
-from io_.loaders import load_matriz_inyecciones, load_coefs_inyeccion_area, load_premisas_areas
+
 from config import PATH_INPUTS
-from domain.normalizacion import *
+from domain.columnas import (
+    COL_AREA,
+    COL_COEF_INYECCION,
+    COL_GASODUCTO,
+    COL_PERIODO,
+)
 from domain.ctes_gas import COMPUESTOS
+from domain.normalizacion import canonizar_areas
+from io_.loaders import (
+    ALIAS_AREAS,
+    load_coefs_inyeccion_area,
+    load_matriz_inyecciones,
+    load_premisas_areas,
+)
 
 
+def rellenar_numericos(df: pd.DataFrame, valor=0) -> pd.DataFrame:
+    """
+    Rellena nulos SOLO en las columnas numericas.
+
+    La version anterior hacia `df.fillna(0)` sobre la tabla entera, asi que
+    una celda de texto vacia (Area, Cuenca) quedaba con el numero 0 y se
+    convertia en una categoria fantasma. Los nulos de texto tienen que seguir
+    siendo nulos para que los merges los reporten.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+    valor : any
+        Valor de relleno.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copia de la entrada.
+    """
+    salida = df.copy()
+    numericas = salida.select_dtypes("number").columns
+
+    salida[numericas] = salida[numericas].fillna(valor)
+
+    return salida
 
 
+def preparar_matriz_inyecciones(matriz_inyecciones: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pasa la matriz origen-destino a formato largo.
 
-def preprocesar_inputs(flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos):
+    En la hoja original cada columna es un gasoducto y sus celdas son las
+    areas que inyectan ahi. Como las columnas tienen distinto largo, sobran
+    celdas vacias al pie: esas filas se descartan (antes habia un
+    `matriz_inyecciones.fillna('error')` que no hacia nada, porque no se
+    asignaba el resultado).
 
-
-    matriz_inyecciones = load_matriz_inyecciones(PATH_INPUTS)
-    coefs_inyeccion_area = load_coefs_inyeccion_area(PATH_INPUTS)
-    premisas_areas = load_premisas_areas(PATH_INPUTS)
-
-    detalles_hubs["Area"] = normalizar_serie(detalles_hubs["Area"])
-    flujos_directos["Area"] = normalizar_serie(flujos_directos["Area"])
-
-    flujos_directos = flujos_directos.fillna(0)
-    yacimientos = yacimientos.fillna(0)
-    detalles_hubs = detalles_hubs.fillna(0)
-    propiedades = propiedades.fillna(0)
-
-    plantas_yacimientos['Area'] = plantas_yacimientos['Area'].apply(normalizar)
-
-    yacimientos['Area'] = yacimientos['Area'].apply(normalizar)
-
-
-    matriz_inyecciones = matriz_inyecciones.melt(
-        var_name="Gasoducto",
-        value_name="Area"
+    Returns
+    -------
+    pandas.DataFrame
+        Columnas: Gasoducto, Area.
+    """
+    largo = matriz_inyecciones.melt(
+        var_name=COL_GASODUCTO,
+        value_name=COL_AREA,
     )
 
-    matriz_inyecciones['Area'] = matriz_inyecciones['Area'].apply(normalizar)
-    matriz_inyecciones.fillna('error')
+    largo = largo[largo[COL_AREA].notna()]
 
-    coefs_inyeccion_area['Area'] = coefs_inyeccion_area['Area'].apply(normalizar)
+    # Aca si hay que canonizar a mano: en esta hoja las areas venian como
+    # valores repartidos a lo ancho, no en una columna Area, asi que el
+    # loader no pudo hacerlo.
+    largo[COL_AREA] = canonizar_areas(largo[COL_AREA], ALIAS_AREAS)
 
-    coefs_inyeccion_area = coefs_inyeccion_area.melt(
-        id_vars= ['Area', 'Gasoducto'],
-        var_name = "Periodo",
-        value_name = "Coef_Inyeccion"
+    return largo[largo[COL_AREA] != ""].reset_index(drop=True)
+
+
+def preparar_coefs_inyeccion_area(
+    coefs_inyeccion_area: pd.DataFrame,
+    *,
+    formato_periodo: str = "%m-%Y",
+) -> pd.DataFrame:
+    """
+    Pasa los coeficientes de inyeccion por area a formato largo.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columnas: Area, Gasoducto, Periodo, Coef_Inyeccion.
+    """
+    largo = coefs_inyeccion_area.melt(
+        id_vars=[COL_AREA, COL_GASODUCTO],
+        var_name=COL_PERIODO,
+        value_name=COL_COEF_INYECCION,
     )
 
-    coefs_inyeccion_area["Periodo"] = pd.to_datetime(coefs_inyeccion_area["Periodo"], format="%m-%Y")
+    largo[COL_PERIODO] = pd.to_datetime(largo[COL_PERIODO], format=formato_periodo)
+
+    return largo
 
 
+def preparar_propiedades(propiedades: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filtra los compuestos de interes y agrega el PCS molar.
 
-    premisas_areas['Area'] = premisas_areas['Area'].apply(normalizar)
+    Returns
+    -------
+    pandas.DataFrame
+        Indexado por Compuesto.
+    """
+    salida = rellenar_numericos(propiedades)
+
+    salida = salida[salida["Compuesto"].isin(COMPUESTOS)].set_index("Compuesto")
+
+    faltantes = set(COMPUESTOS) - set(salida.index)
+    if faltantes:
+        print(f"[propiedades] compuestos sin datos: {sorted(faltantes)}")
+
+    salida["PCS [kJ/mol]"] = (
+        salida["Peso molecular [kg/kmol]"] * salida["PCS [MJ/kg]"]
+    )
+
+    return salida
 
 
-    propiedades = propiedades[propiedades["Compuesto"].isin(COMPUESTOS)]
+def preprocesar_inputs(
+    *,
+    flujos_directos: pd.DataFrame,
+    yacimientos: pd.DataFrame,
+    detalles_hubs: pd.DataFrame,
+    propiedades: pd.DataFrame,
+    plantas_yacimientos: pd.DataFrame,
+    path_inputs=PATH_INPUTS,
+) -> dict[str, pd.DataFrame]:
+    """
+    Deja todos los inputs listos para el pipeline.
 
-    propiedades = propiedades.set_index('Compuesto')
+    Parameters
+    ----------
+    flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos
+        Salidas de los loaders (Area ya canonizada).
+    path_inputs : str | pathlib.Path
+        Ruta del Excel, para las hojas que se cargan aca adentro.
 
-    propiedades['PCS [kJ/mol]'] = propiedades['Peso molecular [kg/kmol]'] * propiedades['PCS [MJ/kg]']
+    Returns
+    -------
+    dict[str, pandas.DataFrame]
+        Diccionario con las 8 tablas. Se devuelve un dict y no una tupla
+        para que agregar o reordenar una tabla no rompa el desempaquetado
+        en `main.py`.
+    """
+    matriz_inyecciones = load_matriz_inyecciones(path_inputs)
+    coefs_inyeccion_area = load_coefs_inyeccion_area(path_inputs)
+    premisas_areas = load_premisas_areas(path_inputs)
 
-    return flujos_directos, yacimientos, detalles_hubs, propiedades, plantas_yacimientos, matriz_inyecciones, coefs_inyeccion_area, premisas_areas
+    return {
+        "flujos_directos": rellenar_numericos(flujos_directos),
+        "yacimientos": rellenar_numericos(yacimientos),
+        "detalles_hubs": rellenar_numericos(detalles_hubs),
+        "plantas_yacimientos": plantas_yacimientos.copy(),
+        "premisas_areas": premisas_areas.copy(),
+        "propiedades": preparar_propiedades(propiedades),
+        "matriz_inyecciones": preparar_matriz_inyecciones(matriz_inyecciones),
+        "coefs_inyeccion_area": preparar_coefs_inyeccion_area(coefs_inyeccion_area),
+    }

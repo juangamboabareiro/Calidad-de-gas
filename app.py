@@ -74,6 +74,11 @@ from pipeline.tabla_total import (
 from outputs.writers import guardar
 
 
+from pipeline.detalles_hubs import calcular_detalles_hubs_areas
+
+# Y agregar, junto a los otros imports de ui/:
+from ui.diagnosticos import capturar, mostrar as mostrar_diagnostico
+
 st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
 
 
@@ -468,23 +473,26 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         status.update(label="Datos cargados ✅", state="complete")
 
     with st.status("Normalizando y preprocesando...", expanded=False) as status:
-        (
-            flujos_directos,
-            yacimientos,
-            detalles_hubs,
-            propiedades,
-            plantas_yacimientos,
-            matriz_inyecciones,
-            coefs_inyeccion_area,
-            premisas_areas,
-        ) = preprocesar_inputs(
+        inputs = preprocesar_inputs(
             flujos_directos=flujos_directos,
             yacimientos=yacimientos,
             detalles_hubs=detalles_hubs,
             propiedades=propiedades,
             plantas_yacimientos=plantas_yacimientos,
+            path_inputs=path,
         )
+
+        flujos_directos      = inputs["flujos_directos"]
+        yacimientos          = inputs["yacimientos"]
+        detalles_hubs        = inputs["detalles_hubs"]
+        propiedades          = inputs["propiedades"]
+        plantas_yacimientos  = inputs["plantas_yacimientos"]
+        matriz_inyecciones   = inputs["matriz_inyecciones"]
+        coefs_inyeccion_area = inputs["coefs_inyeccion_area"]
+        premisas_areas       = inputs["premisas_areas"]
+
         status.update(label="Preprocesamiento listo ✅", state="complete")
+
 
     with st.status("Calculando inyección y tablas totales...", expanded=False) as status:
         inyeccion_std = calcular_inyeccion_std(inyeccion_9300, coeficientes)
@@ -492,11 +500,16 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         inyeccion_area = calcular_inyeccion_area(inyeccion, matriz_inyecciones)
 
         inyeccion_yacimientos_areas = calcular_inyeccion_yacimientos_areas(
-            yacimientos, plantas_yacimientos, inyeccion_area)
-        inyeccion_detalles_hubs = calcular_inyeccion_detalles_hubs(
+            yacimientos=yacimientos,
+            plantas_yacimientos=plantas_yacimientos,
+            inyeccion_area=inyeccion_area,
+        )[1]          # devuelve (yacimientos_areas, inyeccion_yacimientos_areas)
+
+        detalles_hubs_areas = calcular_detalles_hubs_areas(
             detalles_hubs, plantas_yacimientos)
+
         inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(
-            flujos_directos, matriz_inyecciones)
+            flujos_directos)
 
         tabla_total_yacimientos = calcular_tabla_total_yacimientos(
             inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area,
@@ -505,7 +518,7 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
             inyeccion_flujos_directos, coefs_inyeccion_area, premisas_areas,
             periodo, ctes.COMPUESTOS)
         tabla_total_detalles_hubs = calcular_tabla_total_detalles_hubs(
-            inyeccion_detalles_hubs, premisas_areas)
+            detalles_hubs_areas, premisas_areas)
 
         tabla_total_yacimientos = calcular_propiedades_gas(
             tabla_total_yacimientos, propiedades, ctes.COMPUESTOS, ctes.PRESION_BASE,
@@ -630,12 +643,18 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
 
 
 if run:
+    registro = []
     try:
-        st.session_state["resultados"] = ejecutar_pipeline(input_path, PARAMS, guardar_csvs)
-        st.sidebar.success("Pipeline ejecutado.")
+        with capturar() as registro:
+            st.session_state["resultados"] = ejecutar_pipeline(
+                input_path, PARAMS, guardar_csvs
+            )
     except Exception as e:
         st.sidebar.error(f"El pipeline falló: {e}")
         st.exception(e)
+    finally:
+        st.session_state["diagnostico"] = registro
+
 
 
 # ===========================================================================
@@ -658,6 +677,9 @@ tab_resumen, tab_cascada, tab_tablas, tab_red, tab_tbx, tab_dp, tab_mega = st.ta
 )
 
 with tab_resumen:
+    st.subheader("Calidad de los datos de entrada")
+    mostrar_diagnostico(st.session_state.get("diagnostico", []))
+    st.divider()
     desvio = resultados["desvio_balance"]
     if desvio < 1e-6:
         st.success(f"Balance por eslabón cerrado (desvío máx. {desvio:.2e}).")

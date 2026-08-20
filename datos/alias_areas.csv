@@ -1,0 +1,17 @@
+# Equivalencias de nombres de area.
+#
+# Se usa cuando la MISMA area aparece escrita distinto en dos hojas y la
+# normalizacion (tildes / espacios / mayusculas) no alcanza para unificarlas.
+#
+# alias    -> como aparece escrita la variante
+# canonico -> el nombre que queremos usar como unico
+#
+# Ambas columnas se normalizan al cargarse, asi que se pueden escribir con
+# tildes y espacios normales. Agregar una fila por variante encontrada.
+#
+# Para descubrir candidatos:
+#     set(premisas_areas["Area"]) - set(yacimientos["Area"])
+#
+alias,canonico
+# Aguada Pichana Este,AP Este
+# Pampas Ch.,Pampa del Castillo
