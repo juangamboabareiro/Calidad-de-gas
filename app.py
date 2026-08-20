@@ -669,7 +669,6 @@ with tab_resumen:
 
     st.subheader("Estado de cada eslabón")
     for nombre_planta, datos in plantas.items():
-        st.markdown(f"### {nombre_planta}")
         _kpi_planta(nombre_planta, datos)
         st.divider()
 
