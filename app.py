@@ -744,7 +744,7 @@ def _mostrar_planta(tab, nombre_planta, datos):
                          use_container_width=True)
         with c2:
             st.markdown("**Composición gas residual (salida)**")
-            st.dataframe(_a_dataframe_seguro(datos["gas_residual_OUT"], "Gas residual OUT"),
+            st.dataframe(_a_dataframe_seguro(datos["gas_residual_OUT"].T, "Gas residual OUT"),
                          use_container_width=True)
 
         st.markdown("**LGN retenido (tn/d) — sobre el gas efectivamente tratado**")
