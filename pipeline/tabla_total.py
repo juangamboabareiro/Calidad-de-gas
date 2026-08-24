@@ -1,5 +1,7 @@
 import pandas as pd
+
 from domain.normalizacion import normalizar
+from pipeline.cromatografia import agregar_cromatografia
 
 
 def query_volumen_tabla_total(df1, df2, PERIODO_CONSIDERADO):
@@ -24,7 +26,7 @@ def query_coef_inyeccion_tabla_total(df1, df2, PERIODO_CONSIDERADO):
     return df_query
 
 
-def calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area, premisas_areas, PERIODO_CONSIDERADO, COMPUESTOS):
+def calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area, premisas_por_ruta, premisas_por_clave, sufijos_planta, PERIODO_CONSIDERADO, COMPUESTOS):
 
     tabla_total_yacimientos = pd.DataFrame()
     tabla_total_yacimientos["Area"] =  inyeccion_yacimientos_areas["Area"]
@@ -38,16 +40,26 @@ def calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std,
     tabla_total_yacimientos["Volumen_inyectado"] = tabla_total_yacimientos["Volumen"] * tabla_total_yacimientos["Coef_Inyeccion"]
 
 
-    tabla_total_yacimientos = tabla_total_yacimientos.merge(
-        premisas_areas,
-        on="Area",
-        how="left"
+    ### Esto es agregar los datos de croma y calcular el volumen por compuesto
+
+    # Antes: merge(premisas_areas, on="Area") + drop_duplicates(['Area','Gasoducto']).
+    # Eso agarraba las dos filas de Fortin de Piedra (Planta y Otra) y se quedaba
+    # con la primera segun el orden de la hoja. Ahora la clave es Area+Sufijo,
+    # con el sufijo saliendo del par (Area, Gasoducto). El drop_duplicates se va:
+    # con la clave correcta el merge ya es 1:1, y dejarlo taparia un problema.
+    tabla_total_yacimientos = agregar_cromatografia(
+        tabla_total_yacimientos,
+        premisas_por_ruta,
+        premisas_por_clave,
+        sufijos_planta,
+        COMPUESTOS,
+        nombre="tabla_total_yacimientos",
     )
 
-    tabla_total_yacimientos = tabla_total_yacimientos.drop_duplicates(subset = ['Area', 'Gasoducto'])
-
-
-    ### Esto es agregar los datos de croma y calcular el volumen por compuesto
+    # Las filas sin cromatografia vienen en NaN a proposito. Se rellenan aca, a
+    # la vista: si el reporte de arriba dice "N filas SIN cromatografia", este
+    # fillna las convierte en gas vacio y hay que ir a mirar por que.
+    tabla_total_yacimientos[COMPUESTOS] = tabla_total_yacimientos[COMPUESTOS].fillna(0)
 
 
     vol_compuestos = (
@@ -68,7 +80,7 @@ def calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std,
 
 
 
-def calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyeccion_area, premisas_areas, PERIODO_CONSIDERADO,COMPUESTOS):
+def calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyeccion_area, premisas_por_ruta, premisas_por_clave, sufijos_planta, PERIODO_CONSIDERADO, COMPUESTOS):
 
     tabla_total_flujos_directos = inyeccion_flujos_directos
 
@@ -79,14 +91,21 @@ def calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyecc
     tabla_total_flujos_directos["Volumen_inyectado"] = tabla_total_flujos_directos["Volumen"] * tabla_total_flujos_directos["Coef_Inyeccion"]
 
 
-
-    tabla_total_flujos_directos = tabla_total_flujos_directos.merge(
-        premisas_areas,
-        on="Area",
-        how="left"
+    # Las premisas de gasoducto estan repetidas una vez por destino con valores
+    # identicos (Pampa SCH x3, YPF - RDM x2...). Mergeando por Area salia un
+    # producto cartesiano de 3x3 que el drop_duplicates volvia a bajar a 3.
+    # `preparar_premisas` las colapsa de entrada, y revienta si alguna vez
+    # difieren.
+    tabla_total_flujos_directos = agregar_cromatografia(
+        tabla_total_flujos_directos,
+        premisas_por_ruta,
+        premisas_por_clave,
+        sufijos_planta,
+        COMPUESTOS,
+        nombre="tabla_total_flujos_directos",
     )
 
-    tabla_total_flujos_directos = tabla_total_flujos_directos.drop_duplicates(subset = ['Area', 'Gasoducto'])
+    tabla_total_flujos_directos[COMPUESTOS] = tabla_total_flujos_directos[COMPUESTOS].fillna(0)
 
 
     vol_COMPUESTOS = (
@@ -106,7 +125,7 @@ def calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyecc
 
 
 
-def calcular_tabla_total_detalles_hubs(detalles_hubs_areas, premisas_areas):
+def calcular_tabla_total_detalles_hubs(detalles_hubs_areas, premisas_por_ruta, premisas_por_clave, sufijos_planta, COMPUESTOS):
 
     detalles_hubs_areas_aux =  detalles_hubs_areas.melt(
         id_vars=["Area", "Gasoducto", "HUB"],
@@ -118,10 +137,26 @@ def calcular_tabla_total_detalles_hubs(detalles_hubs_areas, premisas_areas):
     detalles_hubs_areas_aux['Destino'] = detalles_hubs_areas_aux['Destino'].apply(normalizar)
 
 
-    tabla_total_detalles_hubs = detalles_hubs_areas_aux.merge(
-        premisas_areas,
-        on="Area",
-        how="inner"
+    # El sufijo se busca por (Area, Gasoducto), igual que en el Excel: Gasoducto
+    # es el ducto al que inyecta el area, Destino es la columna melteada.
+    #
+    # Aca ademas se arregla un bug que no tenian las otras dos: esta funcion no
+    # hacia drop_duplicates, asi que Fortin de Piedra quedaba DUPLICADO (una fila
+    # por cada premisa) y su volumen se contaba dos veces al agregar.
+    tabla_total_detalles_hubs = agregar_cromatografia(
+        detalles_hubs_areas_aux,
+        premisas_por_ruta,
+        premisas_por_clave,
+        sufijos_planta,
+        COMPUESTOS,
+        nombre="tabla_total_detalles_hubs",
     )
+
+    # Esta tabla mezcla renglones de area con renglones que son HUBs o plantas
+    # ("hubsierrabarrosa", "tbxelporton"), que no tienen cromatografia. El merge
+    # original era how="inner" y por eso los descartaba. Se mantiene ese
+    # comportamiento, pero explicito: sin cromato, la fila se va.
+    sin_croma = tabla_total_detalles_hubs[COMPUESTOS].isna().all(axis=1)
+    tabla_total_detalles_hubs = tabla_total_detalles_hubs[~sin_croma]
 
     return tabla_total_detalles_hubs

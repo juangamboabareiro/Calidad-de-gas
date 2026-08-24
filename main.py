@@ -18,6 +18,17 @@ from pipeline.plantas.TTY import modelar_TTY
 from outputs.writers import guardar
 from io_.loaders import load_flujos_directos, load_yacimientos, load_detalles_hubs, load_propiedades, load_plantas_yacimientos, load_matriz_inyecciones, load_premisas_areas, load_coefs_inyeccion_area, load_retenidos_rtp
 from pipeline.plantas.flujo_plantas import calcular_DERIVACION
+from pipeline.cromatografia import (
+    cargar_sufijos_planta,
+    validar_sufijos,
+    preparar_premisas,
+)
+from pipeline.cromatografia import (
+    cargar_sufijos_planta,
+    validar_sufijos,
+    preparar_premisas,
+)
+from pipeline.preprocesamiento import validar_destinos_matriz
 
 
 
@@ -41,7 +52,6 @@ plantas_yacimientos = load_plantas_yacimientos(config.PATH_INPUTS)
 #endregion
 
 
-
 # region preprocesamiento de datos
 
 inputs = preprocesar_inputs(
@@ -61,6 +71,14 @@ matriz_inyecciones   = inputs["matriz_inyecciones"]
 coefs_inyeccion_area = inputs["coefs_inyeccion_area"]
 premisas_areas       = inputs["premisas_areas"]
 
+
+sufijos_planta = cargar_sufijos_planta(config.PATH_INPUTS)
+premisas_por_ruta, premisas_por_clave = preparar_premisas(premisas_areas, COMPUESTOS, sufijos_planta)
+
+
+sufijos_planta = cargar_sufijos_planta(config.PATH_INPUTS)
+premisas_por_ruta, premisas_por_clave = preparar_premisas(
+    premisas_areas, COMPUESTOS, sufijos_planta)
 # endregion
 
 
@@ -82,9 +100,21 @@ detalles_hubs_areas = calcular_detalles_hubs_areas(detalles_hubs, plantas_yacimi
 inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(flujos_directos)
 
 
-tabla_total_yacimientos = calcular_tabla_total_yacimientos(inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area, premisas_areas, config.PERIODO_CONSIDERADO, COMPUESTOS)
-tabla_total_flujos_directos = calcular_tabla_total_flujos_directos(inyeccion_flujos_directos, coefs_inyeccion_area, premisas_areas, config.PERIODO_CONSIDERADO, COMPUESTOS)
-tabla_total_detalles_hubs = calcular_tabla_total_detalles_hubs(detalles_hubs_areas, premisas_areas)
+tabla_total_yacimientos = calcular_tabla_total_yacimientos(
+    inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area,
+    premisas_por_ruta, premisas_por_clave, sufijos_planta,
+    config.PERIODO_CONSIDERADO, COMPUESTOS)
+
+tabla_total_flujos_directos = calcular_tabla_total_flujos_directos(
+    inyeccion_flujos_directos, coefs_inyeccion_area,
+    premisas_por_ruta, premisas_por_clave, sufijos_planta,
+    config.PERIODO_CONSIDERADO, COMPUESTOS)
+
+tabla_total_detalles_hubs = calcular_tabla_total_detalles_hubs(
+    detalles_hubs_areas,
+    premisas_por_ruta, premisas_por_clave, sufijos_planta, COMPUESTOS)
+
+
 
 tabla_total_yacimientos = calcular_propiedades_gas(tabla_total_yacimientos, propiedades, COMPUESTOS, PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, DENSIDAD_AIRE, CONVERSION)
 tabla_total_flujos_directos = calcular_propiedades_gas(tabla_total_flujos_directos, propiedades, COMPUESTOS, PRESION_BASE, TEMPERATURA_BASE, CONSTANTE_GAS, DENSIDAD_AIRE, CONVERSION)
@@ -98,6 +128,10 @@ guardar(tabla_total_detalles_hubs, 'TBL_TTL_DH.csv')
 
 # endregion
 
+
+
+validar_sufijos(sufijos_planta, premisas_areas,
+                [inyeccion_yacimientos_areas, inyeccion_flujos_directos])
 
 
 # region modelado de plantas — CASCADA
@@ -128,9 +162,10 @@ TBX_EN_SERVICIO = config.PERIODO_CONSIDERADO >= config.FECHA_PM_TTY_TBX
 
 
 comunes = dict(
-    matriz_inyecciones = load_matriz_inyecciones(config.PATH_INPUTS),
+    matriz_inyecciones=matriz_inyecciones,
     calcular_retenidos=calcular_retenidos,
     tabla_total_flujos_directos=tabla_total_flujos_directos,
+    tabla_total_yacimientos=tabla_total_yacimientos,   # nuevo
     propiedades=propiedades,
     COMPUESTOS=COMPUESTOS,
 )

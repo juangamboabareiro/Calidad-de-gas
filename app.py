@@ -23,6 +23,18 @@ El traspaso TBX→DP no es una "derivación" con mezcla: los dos trenes comparte
 el pool, así que la cromatografía es idéntica y solo cambia el volumen. La única
 derivación real es DP→MEGA, que sí entra a un pool de otra composición.
 
+CROMATOGRAFIA Y POOL DE PLANTA
+------------------------------
+La cromatografía de cada fila ya no se pega con un merge por `Area`: se busca
+por `(Area, Gasoducto)` y, si no hay premisa de ruta, por `Area + Sufijo`. El
+sufijo sale de la hoja `Sufijos-Planta` y desambigua las áreas que tienen dos
+cromatografías según el destino (Fortín de Piedra: `Planta` vs `Otra`).
+
+El pool de cada planta se arma filtrando por `Gasoducto == nombre_planta` sobre
+`flujos_directos` Y `yacimientos`. Antes se mergeaba solo por `Area` contra
+flujos directos: eso traía todas las rutas de un origen que se abre a varios
+destinos, y descartaba en silencio las áreas que inyectan directo a la planta.
+
 NOTA SOBRE PARAMETROS EN VIVO
 -----------------------------
 Varios módulos leen `config` a nivel de módulo, así que el valor queda congelado
@@ -64,8 +76,13 @@ from domain.propiedades_gas import calcular_propiedades_gas, calcular_retenidos
 from pipeline.inyeccion_std import calcular_inyeccion_std
 from pipeline.inyeccion_area import calcular_inyeccion, calcular_inyeccion_area
 from pipeline.yacimientos import calcular_inyeccion_yacimientos_areas
-from pipeline.detalles_hubs import calcular_inyeccion_detalles_hubs
+from pipeline.detalles_hubs import calcular_detalles_hubs_areas
 from pipeline.flujos_directos import calcular_inyeccion_flujos_directos
+from pipeline.cromatografia import (
+    cargar_sufijos_planta,
+    preparar_premisas,
+    validar_sufijos,
+)
 from pipeline.tabla_total import (
     calcular_tabla_total_yacimientos,
     calcular_tabla_total_flujos_directos,
@@ -73,10 +90,6 @@ from pipeline.tabla_total import (
 )
 from outputs.writers import guardar
 
-
-from pipeline.detalles_hubs import calcular_detalles_hubs_areas
-
-# Y agregar, junto a los otros imports de ui/:
 from ui.diagnosticos import capturar, mostrar as mostrar_diagnostico
 
 st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
@@ -196,6 +209,47 @@ def _kpi_planta(nombre_planta: str, datos: dict):
         st.success(f"✅ **{nombre_planta}** trata todo el gas que le llega.")
 
 
+
+
+def _kpi_origenes(datos: dict):
+    """De dónde sale el gas del pool, por tabla de origen.
+
+    El pool se arma filtrando por `Gasoducto == nombre_planta` sobre las dos
+    tablas totales. La columna `Origen_tabla` traza cada fila. Sirve para ver de
+    un vistazo si una planta está recibiendo inyección directa de áreas
+    (`yacimientos`) además del gas que le llega por gasoducto
+    (`flujos_directos`), que es justo lo que el armado anterior perdía.
+    """
+    tabla = datos.get("tabla_total")
+
+    if tabla is None or "Origen_tabla" not in tabla.columns:
+        st.caption("Sin traza de origen (tabla armada con la versión anterior).")
+        return
+
+    # La fila que agrega una derivación de otra planta no pasa por
+    # `armar_input_planta`, así que llega sin `Origen_tabla`. Sin este fillna el
+    # groupby la descarta y el traspaso DP -> MEGA desaparece del resumen.
+    traza = tabla.copy()
+    traza["Origen_tabla"] = traza["Origen_tabla"].fillna("derivacion")
+
+    col_volumen = "Volumen_pool" if "Volumen_pool" in traza.columns else "Volumen_inyectado"
+
+    resumen = traza.groupby("Origen_tabla").agg(
+        origenes=("Area", "nunique"), volumen=(col_volumen, "sum"))
+
+    columnas = st.columns(max(len(resumen), 1))
+    etiquetas = {
+        "flujos_directos": "Vía gasoducto",
+        "yacimientos": "Inyección directa",
+        "derivacion": "Traspaso de otra planta",
+    }
+
+    for col, (origen, fila) in zip(columnas, resumen.iterrows()):
+        col.metric(
+            etiquetas.get(origen, str(origen)),
+            _fmt(_a_mm(fila["volumen"]), 2, " MMm3/d"),
+            help=f"{int(fila['origenes'])} orígenes distintos",
+        )
 
 
 def _armar_esquema(datos: dict) -> dict:
@@ -491,6 +545,15 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         coefs_inyeccion_area = inputs["coefs_inyeccion_area"]
         premisas_areas       = inputs["premisas_areas"]
 
+        # La hoja de premisas se parte en dos tablas de busqueda: por ruta
+        # (Area, Gasoducto) para los gasoductos, y por Area+Sufijo para las
+        # areas. `sufijos_planta` es lo que permite distinguir un duplicado que
+        # deberia estar desambiguado (Fortin de Piedra) de una inconsistencia
+        # de la hoja (Aguada de Castro, cargada dos veces con valores distintos).
+        sufijos_planta = cargar_sufijos_planta(path)
+        premisas_por_ruta, premisas_por_clave = preparar_premisas(
+            premisas_areas, ctes.COMPUESTOS, sufijos_planta)
+
         status.update(label="Preprocesamiento listo ✅", state="complete")
 
 
@@ -511,14 +574,25 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         inyeccion_flujos_directos = calcular_inyeccion_flujos_directos(
             flujos_directos)
 
+        # El corte de la clave concatenada de Sufijos-Planta se hace por el
+        # primer guion. Esto verifica que haya dado nombres de area reales
+        # (se rompe si algun dia un area tiene guion en el nombre).
+        validar_sufijos(
+            sufijos_planta, premisas_areas,
+            [inyeccion_yacimientos_areas, inyeccion_flujos_directos])
+
         tabla_total_yacimientos = calcular_tabla_total_yacimientos(
             inyeccion_yacimientos_areas, inyeccion_std, coefs_inyeccion_area,
-            premisas_areas, periodo, ctes.COMPUESTOS)
+            premisas_por_ruta, premisas_por_clave, sufijos_planta,
+            periodo, ctes.COMPUESTOS)
         tabla_total_flujos_directos = calcular_tabla_total_flujos_directos(
-            inyeccion_flujos_directos, coefs_inyeccion_area, premisas_areas,
+            inyeccion_flujos_directos, coefs_inyeccion_area,
+            premisas_por_ruta, premisas_por_clave, sufijos_planta,
             periodo, ctes.COMPUESTOS)
         tabla_total_detalles_hubs = calcular_tabla_total_detalles_hubs(
-            detalles_hubs_areas, premisas_areas)
+            detalles_hubs_areas,
+            premisas_por_ruta, premisas_por_clave, sufijos_planta,
+            ctes.COMPUESTOS)
 
         tabla_total_yacimientos = calcular_propiedades_gas(
             tabla_total_yacimientos, propiedades, ctes.COMPUESTOS, ctes.PRESION_BASE,
@@ -541,10 +615,19 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         retenidos_TTY_TBX = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "TBX"]
         retenidos_MEGA = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "TBX MEGA"]
 
+        # OJO: `matriz_inyecciones` va la version CRUDA y ANCHA (una columna por
+        # destino), no la melteada de `inputs`. `io_plantas` la usa como
+        # matriz[nombre_planta] para validar el pool contra la lista de origenes
+        # declarada. No reemplazar por inputs["matriz_inyecciones"].
+        #
+        # `tabla_total_yacimientos` hace falta para MEGA y TBX El Porton, cuyos
+        # origenes incluyen areas que inyectan directo a la planta. TTY no la
+        # necesita (VMN y VMS son gasoductos) pero pasarla no cambia nada.
         comunes = dict(
             matriz_inyecciones=load_matriz_inyecciones(path),
             calcular_retenidos=calcular_retenidos,
             tabla_total_flujos_directos=tabla_total_flujos_directos,
+            tabla_total_yacimientos=tabla_total_yacimientos,
             propiedades=propiedades,
             COMPUESTOS=ctes.COMPUESTOS,
         )
@@ -750,10 +833,20 @@ def _mostrar_planta(tab, nombre_planta, datos):
         )
         st.divider()
 
+        st.markdown("**Origen del pool**")
+        st.caption(
+            "El pool se arma con todas las filas cuyo `Gasoducto` es esta planta, "
+            "tomadas tanto de flujos directos (orígenes que son gasoductos) como de "
+            "yacimientos (áreas que inyectan directo)."
+        )
+        _kpi_origenes(datos)
+        st.divider()
+
         with st.expander("Ver tabla de detalle de la planta"):
             st.caption(
                 "`Volumen_pool` es el gas del pool antes del reparto; "
                 "`Volumen_inyectado` es la porción efectivamente asignada a esta planta. "
+                "`Origen_tabla` dice de qué tabla total salió cada fila. "
                 "Si recibe una derivación con otra composición, aparece como fila extra "
                 "con el nombre de la planta de origen en `Area`."
             )

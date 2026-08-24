@@ -17,7 +17,7 @@ from pipeline.plantas.flujo_plantas import (
 
 
 
-def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_MEGA, CAPACIDAD_EVACUACION_MEGA, CAPACIDAD_MEGA=None, derivaciones=None):
+def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos, propiedades, COMPUESTOS, retenidos_MEGA, CAPACIDAD_EVACUACION_MEGA, CAPACIDAD_MEGA=None, derivaciones=None, tabla_total_yacimientos=None):
     """Modela MEGA: ultimo eslabon de la cascada.
 
     MEGA tiene pool propio y ademas recibe la derivacion de TTY-DP, que viene
@@ -34,6 +34,7 @@ def modelar_MEGA(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_dire
         matriz_inyecciones=matriz_inyecciones,
         calcular_retenidos=calcular_retenidos,
         tabla_total_flujos_directos=tabla_total_flujos_directos,
+        tabla_total_yacimientos=tabla_total_yacimientos,   # nuevo
         propiedades=propiedades,
         compuestos=COMPUESTOS,
         retenidos_planta=retenidos_MEGA,
