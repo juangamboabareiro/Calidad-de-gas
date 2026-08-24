@@ -271,6 +271,101 @@ def centroide(geom: dict) -> tuple[float, float] | None:
     return (sx / (3.0 * area2) / k, sy / (3.0 * area2))
 
 
+def _dist_perpendicular(p, a, b) -> float:
+    """Distancia de p al segmento a-b, en grados escalados por cos(lat)."""
+    k = math.cos(math.radians(a[1])) or 1.0
+
+    px, py = p[0] * k, p[1]
+    ax, ay = a[0] * k, a[1]
+    bx, by = b[0] * k, b[1]
+
+    dx, dy = bx - ax, by - ay
+    largo2 = dx * dx + dy * dy
+
+    if largo2 == 0:
+        return math.hypot(px - ax, py - ay)
+
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / largo2))
+
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _douglas_peucker(puntos: list, tolerancia: float) -> list:
+    """
+    Simplifica una polilinea conservando su forma.
+
+    Iterativo y no recursivo: algunas trazas de la capa tienen miles de
+    vertices y la version recursiva revienta el limite de stack de Python.
+    """
+    if len(puntos) < 3:
+        return puntos
+
+    conservar = [False] * len(puntos)
+    conservar[0] = conservar[-1] = True
+
+    pila = [(0, len(puntos) - 1)]
+
+    while pila:
+        ini, fin = pila.pop()
+
+        peor, indice = 0.0, None
+
+        for i in range(ini + 1, fin):
+            d = _dist_perpendicular(puntos[i], puntos[ini], puntos[fin])
+            if d > peor:
+                peor, indice = d, i
+
+        if indice is not None and peor > tolerancia:
+            conservar[indice] = True
+            pila.append((ini, indice))
+            pila.append((indice, fin))
+
+    return [p for p, keep in zip(puntos, conservar) if keep]
+
+
+def simplificar(geojson: dict, tolerancia: float) -> tuple[dict, int, int]:
+    """
+    Aplica Douglas-Peucker a todas las lineas.
+
+    La tolerancia va en grados: 0.001 son ~90 m a esta latitud. Para un mapa de
+    cuenca eso es invisible, y en la capa de ductos suele recortar la mayoria de
+    los vertices, que es de donde sale el peso del archivo.
+
+    Returns
+    -------
+    (geojson, vertices_antes, vertices_despues)
+    """
+    if not tolerancia:
+        return geojson, 0, 0
+
+    antes = despues = 0
+    salidas = []
+
+    for feat in geojson.get("features", []):
+        geom = feat.get("geometry") or {}
+        tipo = geom.get("type")
+
+        if tipo == "LineString":
+            original = geom["coordinates"]
+            nuevo = _douglas_peucker(original, tolerancia)
+            antes += len(original)
+            despues += len(nuevo)
+            geom = {"type": tipo, "coordinates": nuevo}
+
+        elif tipo == "MultiLineString":
+            partes = []
+            for linea in geom["coordinates"]:
+                simple = _douglas_peucker(linea, tolerancia)
+                antes += len(linea)
+                despues += len(simple)
+                partes.append(simple)
+            geom = {"type": tipo, "coordinates": partes}
+
+        salidas.append({**feat, "geometry": geom})
+
+    return {"type": "FeatureCollection", "features": salidas}, antes, despues
+
+
 def _redondear(coords):
     """Recorta decimales recursivamente en cualquier geometria."""
     if isinstance(coords, (int, float)):
@@ -418,6 +513,9 @@ def main():
                         'Varios valores de un campo con "|".')
     p.add_argument("--diametro-min", dest="diametro_min", type=float,
                    help="Descarta tramos de menos de N pulgadas (saca captacion)")
+    p.add_argument("--tolerancia", type=float, default=0.001,
+                   help="Simplificacion de las trazas en grados. 0.001 = ~90 m, "
+                        "invisible a escala de cuenca. 0 la desactiva.")
     args = p.parse_args()
 
     bbox = tuple(float(v) for v in args.bbox.split(","))
@@ -458,6 +556,12 @@ def main():
 
         if filtros or args.diametro_min:
             print(f"  {len(filtrado['features'])} tras filtrar")
+
+        if args.tolerancia:
+            filtrado, antes, despues = simplificar(filtrado, args.tolerancia)
+            if antes:
+                print(f"  {antes:,} -> {despues:,} vertices "
+                      f"({100 * (1 - despues / antes):.0f}% menos)")
 
         ductos = compactar(filtrado, ["TIPO", "TIPO_TRAMO", "DIAMETRO", "EMPRESA_IN"])
 

@@ -527,6 +527,15 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
     maximo = float(flujos["valor"].max())
     flujos["ancho"] = 1.0 + 11.0 * (flujos["valor"] / maximo) ** 0.5
 
+    # Color como COLUMNA del DataFrame: para LineLayer pydeck resuelve nombres
+    # de columna sin problema, a diferencia de los accesores anidados sobre
+    # GeoJSON. Verde -> rojo segun el volumen relativo.
+    def _color(v):
+        t = (v / maximo) ** 0.5
+        return [int(90 + 130 * t), int(160 - 120 * t), int(90 - 40 * t), 205]
+
+    flujos["color"] = flujos["valor"].map(_color)
+
     flujos["etiqueta"] = (
         flujos["origen"].astype(str) + " → " + flujos["destino"].astype(str)
         + "  ·  " + flujos["valor"].map(lambda v: f"{v:,.0f}")
@@ -539,7 +548,8 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
 # Capas
 # ===========================================================================
 
-def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas):
+def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
+           tridimensional=False):
     capas = []
 
     if concesiones:
@@ -569,17 +579,32 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas):
         ))
 
     if len(flujos):
-        capas.append(pdk.Layer(
-            "ArcLayer",
-            data=flujos,
-            get_source_position="origen_lonlat",
-            get_target_position="destino_lonlat",
-            get_source_color=[90, 160, 90, 150],
-            get_target_color=[200, 30, 40, 200],
-            get_width="ancho",
-            pickable=True,
-            auto_highlight=True,
-        ))
+        if tridimensional:
+            # ArcLayer teseliza cada arco en decenas de segmentos: es lindo
+            # pero pesa, sobre todo con muchas aristas.
+            capas.append(pdk.Layer(
+                "ArcLayer",
+                data=flujos,
+                get_source_position="origen_lonlat",
+                get_target_position="destino_lonlat",
+                get_source_color=[90, 160, 90, 150],
+                get_target_color=[200, 30, 40, 200],
+                get_width="ancho",
+                pickable=True,
+                auto_highlight=True,
+            ))
+        else:
+            capas.append(pdk.Layer(
+                "LineLayer",
+                data=flujos,
+                get_source_position="origen_lonlat",
+                get_target_position="destino_lonlat",
+                get_color="color",
+                get_width="ancho",
+                width_units="pixels",
+                pickable=True,
+                auto_highlight=True,
+            ))
 
     capas.append(pdk.Layer(
         "ScatterplotLayer",
@@ -713,9 +738,16 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     if ductos is not None and ver_ductos:
         grupos_ductos = agrupar_ductos(ductos, modo_color)
 
-    solo_plantas = st.checkbox(
-        "Solo flujos que terminan en planta", value=False,
-        help="Filtra las aristas hacia gasoductos finales, que son la mayoría.")
+    c1, c2 = st.columns(2)
+    with c1:
+        solo_plantas = st.checkbox(
+            "Solo flujos que terminan en planta", value=False,
+            help="Filtra las aristas hacia gasoductos finales, que son la mayoría.")
+    with c2:
+        tridimensional = st.checkbox(
+            "Vista 3D (arcos)", value=False,
+            help="Los arcos se ven mejor pero pesan bastante más: cada uno se "
+                 "dibuja con decenas de segmentos. En 2D son líneas rectas.")
 
     if solo_plantas:
         plantas = set(nodos.loc[nodos["tipo"] == "planta", "clave"])
@@ -730,12 +762,14 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
                 concesiones if ver_conces else None,
                 grupos_ductos if ver_ductos else None,
                 mostrar_etiquetas,
+                tridimensional=tridimensional,
             ),
             initial_view_state=pdk.ViewState(
                 latitude=(sur + norte) / 2,
                 longitude=(oeste + este) / 2,
                 zoom=6.2,
-                pitch=35,
+                pitch=45 if tridimensional else 0,
+                bearing=0,
             ),
             # Sin basemap remoto: el firewall bloquea la salida y ademas el
             # contexto ya lo dan las concesiones.
