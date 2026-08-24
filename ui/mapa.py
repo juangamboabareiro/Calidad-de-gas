@@ -64,6 +64,26 @@ COLOR_TIPO = {
 
 RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 
+# Cortes de diametro en pulgadas. El ultimo tramo es abierto.
+# Los troncales de exportacion de Neuquen estan en 24-36"; de 10 para abajo son
+# ramales y lineas de gathering.
+ESCALA_DIAMETRO = [
+    (12, [150, 175, 190, 170], 1.0, "menos de 12″"),
+    (20, [ 70, 150, 165, 200], 1.8, "12″ a 20″"),
+    (30, [ 40, 100, 170, 220], 2.8, "20″ a 30″"),
+    (999, [140,  40, 110, 240], 4.0, "30″ o más"),
+]
+
+# Paleta categorica para colorear por empresa. Se cicla si hay mas empresas.
+PALETA_EMPRESAS = [
+    [ 31, 119, 180, 220], [255, 127,  14, 220], [ 44, 160,  44, 220],
+    [214,  39,  40, 220], [148, 103, 189, 220], [140,  86,  75, 220],
+    [227, 119, 194, 220], [127, 127, 127, 220], [188, 189,  34, 220],
+    [ 23, 190, 207, 220],
+]
+
+COLOR_SIN_DATO = [170, 170, 175, 150]
+
 
 # ===========================================================================
 # Carga
@@ -201,6 +221,102 @@ def completar_gasoductos(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFra
         salida.loc[idx, ["lat", "lon", "derivada"]] = [lat, lon, True]
 
     return salida
+
+
+# ===========================================================================
+# Coloreo de las trazas
+# ===========================================================================
+
+def _tramo_diametro(valor):
+    """(color, ancho, etiqueta) segun el diametro, o el default si no hay dato."""
+    try:
+        d = float(valor)
+    except (TypeError, ValueError):
+        return COLOR_SIN_DATO, 1.0, "sin dato"
+
+    # La capa usa centinelas para "sin dato" (hay valores de 9999). Un ducto
+    # real no pasa de ~48 pulgadas, asi que todo lo de arriba es ruido.
+    if d <= 0 or d > 60:
+        return COLOR_SIN_DATO, 1.0, "sin dato"
+
+    for tope, color, ancho, etiqueta in ESCALA_DIAMETRO:
+        if d < tope:
+            return color, ancho, etiqueta
+
+    return COLOR_SIN_DATO, 1.0, "sin dato"
+
+
+def colorear_ductos(geojson: dict, modo: str) -> tuple[dict, list[tuple[str, list]]]:
+    """
+    Devuelve una copia con `color` y `ancho` en las propiedades, mas la leyenda.
+
+    No muta el original: `cargar_geojson` esta cacheado y modificar el dict
+    ensuciaria el cache para el resto de la sesion. Se arman properties nuevas
+    pero se comparte la geometria, que es lo pesado y ademas es de solo lectura.
+
+    Returns
+    -------
+    (geojson, leyenda) : (dict, list[(etiqueta, color)])
+    """
+    features = []
+    leyenda: dict[str, list] = {}
+
+    if modo == "Empresa":
+        empresas = sorted({
+            str(f.get("properties", {}).get("EMPRESA_IN") or "Sin dato")
+            for f in geojson.get("features", [])
+        })
+        colores = {
+            e: (COLOR_SIN_DATO if e == "Sin dato"
+                else PALETA_EMPRESAS[i % len(PALETA_EMPRESAS)])
+            for i, e in enumerate(empresas)
+        }
+
+    for feat in geojson.get("features", []):
+        props = feat.get("properties", {}) or {}
+
+        if modo == "Empresa":
+            clave = str(props.get("EMPRESA_IN") or "Sin dato")
+            color, ancho = colores[clave], 1.8
+        else:
+            color, ancho, clave = _tramo_diametro(props.get("DIAMETRO"))
+
+        leyenda.setdefault(clave, color)
+
+        features.append({
+            "type": "Feature",
+            "properties": {**props, "color": color, "ancho": ancho},
+            "geometry": feat["geometry"],
+        })
+
+    if modo == "Empresa":
+        orden = sorted(leyenda.items(), key=lambda kv: kv[0])
+    else:
+        posicion = {e: i for i, (_, _, _, e) in enumerate(ESCALA_DIAMETRO)}
+        orden = sorted(leyenda.items(), key=lambda kv: posicion.get(kv[0], 99))
+
+    return {"type": "FeatureCollection", "features": features}, orden
+
+
+def mostrar_leyenda(leyenda: list[tuple[str, list]], titulo: str):
+    """Chips de color en una linea. `st.markdown` porque no hay widget nativo."""
+    if not leyenda:
+        return
+
+    chips = "".join(
+        f'<span style="display:inline-block;margin:0 14px 4px 0;white-space:nowrap;">'
+        f'<span style="display:inline-block;width:22px;height:4px;'
+        f'background:rgb({c[0]},{c[1]},{c[2]});vertical-align:middle;'
+        f'margin-right:6px;border-radius:2px;"></span>'
+        f'<span style="font-size:0.82rem;color:#444;">{etiqueta}</span></span>'
+        for etiqueta, c in leyenda
+    )
+
+    st.markdown(
+        f'<div style="margin:-6px 0 10px 0;"><span style="font-size:0.78rem;'
+        f'color:#888;margin-right:10px;">{titulo}</span>{chips}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ===========================================================================
@@ -366,9 +482,11 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas):
             data=ductos,
             stroked=True,
             filled=False,
-            get_line_color=[120, 120, 130, 220],
-            line_width_min_pixels=1.4,
-            pickable=False,
+            get_line_color="properties.color",
+            get_line_width="properties.ancho",
+            line_width_units="pixels",
+            line_width_min_pixels=0.8,
+            pickable=True,
         ))
 
     if len(flujos):
@@ -496,7 +614,7 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     ductos = cargar_geojson(RUTA_DUCTOS)
 
     # --- controles ---------------------------------------------------------
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns([1, 1, 1.4, 1])
     with c1:
         ver_conces = st.checkbox("Concesiones", value=concesiones is not None,
                                  disabled=concesiones is None)
@@ -504,7 +622,17 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
         ver_ductos = st.checkbox("Trazas de ductos", value=ductos is not None,
                                  disabled=ductos is None)
     with c3:
+        modo_color = st.selectbox(
+            "Colorear ductos por", ["Diámetro", "Empresa"],
+            disabled=ductos is None or not ver_ductos,
+            help="Por diámetro se distingue un troncal de un ramal; "
+                 "por empresa, quién opera cada traza.")
+    with c4:
         mostrar_etiquetas = st.checkbox("Nombres", value=True)
+
+    leyenda = []
+    if ductos is not None and ver_ductos:
+        ductos, leyenda = colorear_ductos(ductos, modo_color)
 
     solo_plantas = st.checkbox(
         "Solo flujos que terminan en planta", value=False,
@@ -533,10 +661,13 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             # Sin basemap remoto: el firewall bloquea la salida y ademas el
             # contexto ya lo dan las concesiones.
             map_style=None,
-            tooltip={"text": "{detalle}{etiqueta}"},
+            tooltip={"text": "{detalle}{etiqueta}{TIPO} {DIAMETRO}″ · {EMPRESA_IN}"},
         ),
         use_container_width=True,
     )
+
+    if leyenda:
+        mostrar_leyenda(leyenda, f"Ductos por {modo_color.lower()}:")
 
     # --- pie ---------------------------------------------------------------
     n_inferidos = int((dibujables["posicion"] == "inferida").sum())
