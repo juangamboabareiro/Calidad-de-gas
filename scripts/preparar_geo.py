@@ -64,6 +64,9 @@ SALIDA_NODOS = Path("datos") / "geo_nodos.csv"
 # para un mapa de cuenca, y achica el archivo a la mitad o menos.
 DECIMALES = 4
 
+# Arriba de esto el GeoJSON pesa demasiado para mandarlo al navegador entero.
+LIMITE_TRAMOS = 3000
+
 # Candidatos de propiedad con el nombre del area. Varian entre versiones y
 # entre organismos.
 CLAVES_NOMBRE = [
@@ -85,14 +88,23 @@ NODOS_MANUALES = [
 ]
 
 
-
-
 # ===========================================================================
 # Lectura
 # ===========================================================================
 
-def leer_geojson(ruta: Path) -> dict:
-    """Lee un GeoJSON, o convierte un shapefile si hace falta geopandas."""
+def leer_geojson(ruta: Path, bbox=None) -> dict:
+    """
+    Lee un GeoJSON, o un shapefile si esta geopandas.
+
+    Parameters
+    ----------
+    bbox : (oeste, sur, este, norte) | None
+        Solo aplica a shapefiles. Se lo pasa a `read_file`, que usa el indice
+        espacial de OGR para leer UNICAMENTE las features que caen adentro.
+        Importa mucho: la capa de ductos Res. 319/93 tiene 179.201 tramos y
+        6,8 millones de vertices; leerla entera son varios GB de RAM, y con
+        bbox de la cuenca baja a una fraccion.
+    """
     ruta = Path(ruta)
 
     if ruta.suffix.lower() in (".geojson", ".json"):
@@ -108,7 +120,67 @@ def leer_geojson(ruta: Path) -> dict:
             "Guardar como -> GeoJSON, CRS EPSG:4326."
         )
 
-    return json.loads(gpd.read_file(ruta).to_crs(epsg=4326).to_json())
+    gdf = gpd.read_file(ruta, bbox=bbox) if bbox else gpd.read_file(ruta)
+
+    return json.loads(gdf.to_crs(epsg=4326).to_json())
+
+
+def parsear_filtros(texto: str | None) -> dict[str, set[str]]:
+    """
+    "TIPO=GAS,TIPO_TRAMO=TRONCAL|RAMAL" -> {"TIPO": {"GAS"}, ...}
+
+    Varios valores para un mismo campo se separan con "|". La comparacion es
+    sin distinguir mayusculas ni acentos, porque estos .dbf mezclan las dos
+    cosas dentro de la misma columna.
+    """
+    if not texto:
+        return {}
+
+    filtros: dict[str, set[str]] = {}
+
+    for parte in texto.split(","):
+        if "=" not in parte:
+            raise SystemExit(f"Filtro mal escrito: {parte!r}. Formato CAMPO=VALOR.")
+        campo, valores = parte.split("=", 1)
+        filtros[campo.strip()] = {
+            _normalizar_clave(v) for v in valores.split("|") if v.strip()
+        }
+
+    return filtros
+
+
+def filtrar_features(geojson: dict, filtros: dict, diametro_min=None) -> dict:
+    """
+    Se queda con las features que cumplen todos los filtros.
+
+    `diametro_min` es aparte porque es numerico: sirve para sacar las lineas de
+    captacion sin depender de como se llame el tipo de tramo en esta version de
+    la capa. Un troncal de gas dificilmente baje de 8 pulgadas.
+    """
+    if not filtros and diametro_min is None:
+        return geojson
+
+    salidas = []
+
+    for feat in geojson.get("features", []):
+        props = feat.get("properties", {}) or {}
+
+        if any(
+            _normalizar_clave(props.get(campo, "")) not in valores
+            for campo, valores in filtros.items()
+        ):
+            continue
+
+        if diametro_min is not None:
+            try:
+                if float(props.get("DIAMETRO") or 0) < diametro_min:
+                    continue
+            except (TypeError, ValueError):
+                continue
+
+        salidas.append(feat)
+
+    return {"type": "FeatureCollection", "features": salidas}
 
 
 def _normalizar_clave(texto: str) -> str:
@@ -341,14 +413,18 @@ def main():
     p.add_argument("--ductos", help="GeoJSON o SHP de gasoductos (opcional)")
     p.add_argument("--bbox", default="-71.5,-40.5,-66.5,-35.0",
                    help="oeste,sur,este,norte. Default: cuenca Neuquina")
+    p.add_argument("--filtro-ductos", dest="filtro_ductos",
+                   help='Filtros por atributo, ej: "TIPO=GAS,TIPO_TRAMO=TRONCAL|RAMAL". '
+                        'Varios valores de un campo con "|".')
+    p.add_argument("--diametro-min", dest="diametro_min", type=float,
+                   help="Descarta tramos de menos de N pulgadas (saca captacion)")
     args = p.parse_args()
 
     bbox = tuple(float(v) for v in args.bbox.split(","))
     DIR_GEO.mkdir(parents=True, exist_ok=True)
 
     print(f"Leyendo {args.concesiones}...")
-    
-    conces = compactar(leer_geojson(args.concesiones), ["EMPRESA_OP", "CODIGO_DE_"])
+    conces = compactar(leer_geojson(args.concesiones), ["empresa", "provincia"])
     conces = recortar(conces, bbox)
     print(f"  {len(conces['features'])} concesiones dentro del bbox")
 
@@ -372,8 +448,25 @@ def main():
 
     if args.ductos:
         print(f"Leyendo {args.ductos}...")
-        ductos = recortar(compactar(leer_geojson(args.ductos), ["empresa"]), bbox)
-        print(f"  {len(ductos['features'])} tramos dentro del bbox")
+
+        # bbox al leer, no despues: evita cargar los 179.201 tramos del pais.
+        crudo = leer_geojson(args.ductos, bbox=bbox)
+        print(f"  {len(crudo['features'])} tramos en el bbox")
+
+        filtros = parsear_filtros(args.filtro_ductos)
+        filtrado = filtrar_features(crudo, filtros, args.diametro_min)
+
+        if filtros or args.diametro_min:
+            print(f"  {len(filtrado['features'])} tras filtrar")
+
+        ductos = compactar(filtrado, ["TIPO", "TIPO_TRAMO", "DIAMETRO", "EMPRESA_IN"])
+
+        if len(ductos["features"]) > LIMITE_TRAMOS:
+            print(
+                f"\n  OJO: {len(ductos['features'])} tramos es mucho para el navegador.\n"
+                "  El GeoJSON viaja entero en cada render y la pestana se puede colgar.\n"
+                "  Afinate el filtro: --filtro-ductos \"TIPO=GAS\" --diametro-min 8\n"
+            )
 
         destino = DIR_GEO / "ductos.geojson"
         destino.write_text(json.dumps(ductos, separators=(",", ":")), encoding="utf-8")

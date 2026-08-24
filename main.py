@@ -273,3 +273,17 @@ print(g.crs)
 print(list(g.columns))
 print(g.head(3).drop(columns="geometry").to_string())
 
+
+import geopandas as gpd
+d = gpd.read_file("datos/crudo/ductos-hidrocarburos.shp")
+print(len(d), list(d.columns))
+for c in d.columns:
+    if d[c].dtype == object and d[c].nunique() < 40:
+        print(c, "→", d[c].value_counts().head(12).to_dict())
+
+
+
+d = gpd.read_file("datos/crudo/ductos-hidrocarburos.shp", ignore_geometry=True)
+for c in ["TIPO", "TIPO_TRAMO", "MATERIAL"]:
+    print(c, "→", d[c].value_counts().head(15).to_dict(), "\n")
+print(d["DIAMETRO"].describe())

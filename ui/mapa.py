@@ -204,6 +204,89 @@ def completar_gasoductos(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFra
 
 
 # ===========================================================================
+# Posiciones inferidas
+# ===========================================================================
+
+def inferir_posiciones(nodos: pd.DataFrame, edges: pd.DataFrame,
+                       max_pasadas: int = 4) -> pd.DataFrame:
+    """
+    Ubica los nodos sin coordenadas en el centroide de sus origenes.
+
+    Un gasoducto no es un punto, es una linea; y una planta si es un lugar
+    fisico pero no figura en ninguna capa oficial con ese nombre. En vez de
+    dejarlos afuera del mapa, se los pone donde converge el gas que reciben:
+    el promedio de las posiciones de sus origenes, ponderado por volumen.
+
+    No es la ubicacion real. Es una posicion util para leer el mapa, y se
+    marca como tal (columna `posicion`) para que nadie la confunda con un dato.
+
+    Se resuelve en pasadas porque hay dependencias encadenadas: las plantas se
+    alimentan de gasoductos que a su vez se acaban de inferir desde sus areas.
+    Con 4 pasadas alcanza para la cascada actual (area -> ducto -> planta);
+    corta antes si en una pasada no se resolvio nada nuevo.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Copia de `nodos` con lat/lon completadas donde se pudo, mas la columna
+        `posicion` con "cargada" o "inferida".
+    """
+    salida = nodos.copy()
+    salida["posicion"] = salida.apply(
+        lambda f: "cargada" if pd.notna(f["lat"]) and pd.notna(f["lon"]) else "",
+        axis=1,
+    )
+
+    coords = {
+        f.clave: (float(f.lat), float(f.lon))
+        for f in salida.dropna(subset=["lat", "lon"]).itertuples()
+    }
+
+    aristas = edges.copy()
+    aristas["k_origen"] = clave_cruce(aristas["origen"])
+    aristas["k_destino"] = clave_cruce(aristas["destino"])
+    aristas["valor"] = pd.to_numeric(aristas["valor"], errors="coerce").fillna(0)
+    aristas = aristas[aristas["valor"] > 0]
+
+    for _ in range(max_pasadas):
+        pendientes = [k for k in salida["clave"] if k not in coords]
+
+        if not pendientes:
+            break
+
+        resueltos = 0
+
+        for clave in pendientes:
+            entrantes = aristas[aristas["k_destino"] == clave]
+            entrantes = entrantes[entrantes["k_origen"].isin(coords)]
+
+            peso = float(entrantes["valor"].sum())
+
+            if peso <= 0:
+                continue
+
+            lat = sum(coords[f.k_origen][0] * f.valor for f in entrantes.itertuples()) / peso
+            lon = sum(coords[f.k_origen][1] * f.valor for f in entrantes.itertuples()) / peso
+
+            coords[clave] = (lat, lon)
+            resueltos += 1
+
+        if not resueltos:
+            break
+
+    inferidos = salida["posicion"] == ""
+
+    salida.loc[inferidos, "lat"] = salida.loc[inferidos, "clave"].map(
+        lambda k: coords[k][0] if k in coords else None)
+    salida.loc[inferidos, "lon"] = salida.loc[inferidos, "clave"].map(
+        lambda k: coords[k][1] if k in coords else None)
+
+    salida.loc[inferidos & salida["lat"].notna(), "posicion"] = "inferida"
+
+    return salida
+
+
+# ===========================================================================
 # Flujos
 # ===========================================================================
 
@@ -368,6 +451,17 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     # esto ninguna arista tiene sus dos puntas y el mapa sale sin un solo arco.
     nodos = completar_gasoductos(nodos, edges)
 
+    inferir = st.checkbox(
+        "Ubicar gasoductos y plantas donde converge su gas", value=True,
+        help="Un gasoducto es una línea y una planta no figura en las capas "
+             "oficiales. Se los ubica en el centroide de sus orígenes, "
+             "ponderado por volumen. Es una posición de lectura, no un dato.")
+
+    if inferir:
+        nodos = inferir_posiciones(nodos, edges)
+    else:
+        nodos = nodos.assign(posicion="cargada")
+
     dibujables = nodos.dropna(subset=["lat", "lon"]).copy()
 
     if dibujables.empty:
@@ -378,7 +472,18 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
 
     dibujables["color"] = dibujables["tipo"].map(COLOR_TIPO).apply(
         lambda c: c if isinstance(c, list) else COLOR_TIPO["area"])
+
+    # Los inferidos van translucidos: se ven, pero se distinguen de un dato.
+    dibujables.loc[dibujables["posicion"] == "inferida", "color"] = (
+        dibujables.loc[dibujables["posicion"] == "inferida", "color"]
+        .apply(lambda c: c[:3] + [110]))
+
     dibujables["radio"] = dibujables["tipo"].map(RADIO_TIPO).fillna(1500)
+
+    dibujables["detalle"] = dibujables.apply(
+        lambda f: f"{f['nombre']} ({f['tipo']}"
+                  + (", posición inferida)" if f["posicion"] == "inferida" else ")"),
+        axis=1)
 
     # Las posiciones derivadas se dibujan mas transparentes: son esquematicas y
     # no conviene que se lean igual que un dato cargado.
@@ -428,16 +533,19 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             # Sin basemap remoto: el firewall bloquea la salida y ademas el
             # contexto ya lo dan las concesiones.
             map_style=None,
-            tooltip={"text": "{nombre}{etiqueta}"},
+            tooltip={"text": "{detalle}{etiqueta}"},
         ),
         use_container_width=True,
     )
 
     # --- pie ---------------------------------------------------------------
-    c1, c2, c3 = st.columns(3)
+    n_inferidos = int((dibujables["posicion"] == "inferida").sum())
+
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Nodos en el mapa", len(dibujables))
-    c2.metric("Flujos dibujados", len(flujos))
-    c3.metric("Sin coordenadas", len(faltantes))
+    c2.metric("Con posición inferida", n_inferidos)
+    c3.metric("Flujos dibujados", len(flujos))
+    c4.metric("Sin ubicar", len(faltantes))
 
     n_derivadas = int(dibujables.get("derivada", pd.Series(dtype=bool)).fillna(False).sum())
     if n_derivadas:
