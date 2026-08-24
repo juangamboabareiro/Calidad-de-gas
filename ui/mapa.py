@@ -64,22 +64,28 @@ COLOR_TIPO = {
 
 RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 
-# Cortes de diametro en pulgadas. El ultimo tramo es abierto.
-# Los troncales de exportacion de Neuquen estan en 24-36"; de 10 para abajo son
-# ramales y lineas de gathering.
-ESCALA_DIAMETRO = [
-    (12, [150, 175, 190, 170], 1.0, "menos de 12″"),
-    (20, [ 70, 150, 165, 200], 1.8, "12″ a 20″"),
-    (30, [ 40, 100, 170, 220], 2.8, "20″ a 30″"),
-    (999, [140,  40, 110, 240], 4.0, "30″ o más"),
+# Paleta para el diametro, de menor a mayor. Saturada a proposito: el fondo de
+# concesiones ya es gris, y una paleta apagada encima se pierde.
+PALETA_DIAMETRO = [
+    [  0, 170, 200, 230],   # turquesa
+    [ 60, 140, 255, 235],   # azul
+    [255, 150,   0, 240],   # naranja
+    [225,  30,  60, 245],   # rojo
 ]
+
+# Grosor en pixeles por tramo, del mas fino al mas grueso.
+ANCHOS_DIAMETRO = [1.2, 2.0, 3.2, 4.6]
+
+# Fuera de este rango es centinela ("sin dato"): la capa trae valores de 9999.
+DIAMETRO_MIN_VALIDO = 0.5
+DIAMETRO_MAX_VALIDO = 60.0
 
 # Paleta categorica para colorear por empresa. Se cicla si hay mas empresas.
 PALETA_EMPRESAS = [
-    [ 31, 119, 180, 220], [255, 127,  14, 220], [ 44, 160,  44, 220],
-    [214,  39,  40, 220], [148, 103, 189, 220], [140,  86,  75, 220],
-    [227, 119, 194, 220], [127, 127, 127, 220], [188, 189,  34, 220],
-    [ 23, 190, 207, 220],
+    [ 31, 119, 180, 230], [255, 127,  14, 230], [ 44, 160,  44, 230],
+    [214,  39,  40, 230], [148, 103, 189, 230], [140,  86,  75, 230],
+    [227, 119, 194, 230], [ 90,  90,  95, 230], [188, 189,  34, 230],
+    [ 23, 190, 207, 230],
 ]
 
 COLOR_SIN_DATO = [170, 170, 175, 150]
@@ -227,89 +233,161 @@ def completar_gasoductos(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFra
 # Coloreo de las trazas
 # ===========================================================================
 
-def _tramo_diametro(valor):
-    """(color, ancho, etiqueta) segun el diametro, o el default si no hay dato."""
-    try:
-        d = float(valor)
-    except (TypeError, ValueError):
-        return COLOR_SIN_DATO, 1.0, "sin dato"
+def _diametros_validos(geojson: dict) -> list[float]:
+    valores = []
 
-    # La capa usa centinelas para "sin dato" (hay valores de 9999). Un ducto
-    # real no pasa de ~48 pulgadas, asi que todo lo de arriba es ruido.
-    if d <= 0 or d > 60:
-        return COLOR_SIN_DATO, 1.0, "sin dato"
+    for feat in geojson.get("features", []):
+        try:
+            d = float((feat.get("properties") or {}).get("DIAMETRO"))
+        except (TypeError, ValueError):
+            continue
+        if DIAMETRO_MIN_VALIDO <= d <= DIAMETRO_MAX_VALIDO:
+            valores.append(d)
 
-    for tope, color, ancho, etiqueta in ESCALA_DIAMETRO:
-        if d < tope:
-            return color, ancho, etiqueta
-
-    return COLOR_SIN_DATO, 1.0, "sin dato"
+    return sorted(valores)
 
 
-def colorear_ductos(geojson: dict, modo: str) -> tuple[dict, list[tuple[str, list]]]:
+def cortes_diametro(geojson: dict, n: int = 4) -> list[float]:
     """
-    Devuelve una copia con `color` y `ancho` en las propiedades, mas la leyenda.
+    Cortes por cuantiles de los diametros presentes, no una escala fija.
 
-    No muta el original: `cargar_geojson` esta cacheado y modificar el dict
-    ensuciaria el cache para el resto de la sesion. Se arman properties nuevas
-    pero se comparte la geometria, que es lo pesado y ademas es de solo lectura.
+    Una escala fija falla en las dos direcciones: si se filtro por
+    --diametro-min 10, todo cae en el tramo mas bajo y el mapa sale de un solo
+    color; si no se filtro nada, todo cae en el mas bajo tambien porque la
+    mediana de la capa es 4 pulgadas. Con cuantiles los colores siempre se
+    reparten, sea cual sea el recorte.
+    """
+    valores = _diametros_validos(geojson)
+
+    if len(valores) < n:
+        return []
+
+    cortes = []
+    for k in range(1, n):
+        corte = valores[int(len(valores) * k / n)]
+        if corte not in cortes:
+            cortes.append(corte)
+
+    return cortes
+
+
+def _fmt_pulgadas(valor: float) -> str:
+    return f"{valor:g}″"
+
+
+def agrupar_ductos(geojson: dict, modo: str) -> list[dict]:
+    """
+    Parte las trazas en grupos, cada uno con su color y grosor.
+
+    Se devuelve un GeoJSON por grupo, en vez de uno solo con el color en las
+    propiedades, para no depender de que pydeck resuelva un accesor anidado
+    (`properties.color`). Si ese accesor no se interpreta, deck.gl cae al color
+    por defecto y sale todo del mismo tono, que es exactamente el sintoma que
+    queremos evitar. Con una capa por grupo el color es una constante.
+
+    No muta el original: `cargar_geojson` esta cacheado. Se comparten las
+    features tal cual, que son de solo lectura.
 
     Returns
     -------
-    (geojson, leyenda) : (dict, list[(etiqueta, color)])
+    list[dict]
+        Cada uno con etiqueta, color, ancho y features.
     """
-    features = []
-    leyenda: dict[str, list] = {}
+    feats = geojson.get("features", [])
 
     if modo == "Empresa":
-        empresas = sorted({
-            str(f.get("properties", {}).get("EMPRESA_IN") or "Sin dato")
-            for f in geojson.get("features", [])
-        })
-        colores = {
-            e: (COLOR_SIN_DATO if e == "Sin dato"
-                else PALETA_EMPRESAS[i % len(PALETA_EMPRESAS)])
-            for i, e in enumerate(empresas)
-        }
+        grupos: dict[str, list] = {}
 
-    for feat in geojson.get("features", []):
-        props = feat.get("properties", {}) or {}
+        for f in feats:
+            clave = str((f.get("properties") or {}).get("EMPRESA_IN") or "Sin dato")
+            grupos.setdefault(clave, []).append(f)
 
-        if modo == "Empresa":
-            clave = str(props.get("EMPRESA_IN") or "Sin dato")
-            color, ancho = colores[clave], 1.8
+        # Las empresas con mas tramos primero: asi los colores mas distinguibles
+        # de la paleta caen en lo que mas se ve.
+        orden = sorted(grupos, key=lambda k: -len(grupos[k]))
+
+        return [
+            {
+                "etiqueta": f"{clave} ({len(grupos[clave])})",
+                "color": PALETA_EMPRESAS[i % len(PALETA_EMPRESAS)],
+                "ancho": 1.8,
+                "features": grupos[clave],
+            }
+            for i, clave in enumerate(orden)
+        ]
+
+    # --- por diametro ------------------------------------------------------
+    cortes = cortes_diametro(geojson, n=len(PALETA_DIAMETRO))
+
+    if not cortes:
+        return [{
+            "etiqueta": "trazas",
+            "color": PALETA_DIAMETRO[1],
+            "ancho": 2.0,
+            "features": feats,
+        }]
+
+    baldes = [[] for _ in range(len(cortes) + 1)]
+    sin_dato = []
+
+    for f in feats:
+        try:
+            d = float((f.get("properties") or {}).get("DIAMETRO"))
+        except (TypeError, ValueError):
+            sin_dato.append(f)
+            continue
+
+        if not (DIAMETRO_MIN_VALIDO <= d <= DIAMETRO_MAX_VALIDO):
+            sin_dato.append(f)
+            continue
+
+        indice = sum(1 for c in cortes if d >= c)
+        baldes[indice].append(f)
+
+    etiquetas = []
+    for i in range(len(baldes)):
+        if i == 0:
+            etiquetas.append(f"< {_fmt_pulgadas(cortes[0])}")
+        elif i == len(baldes) - 1:
+            etiquetas.append(f"≥ {_fmt_pulgadas(cortes[-1])}")
         else:
-            color, ancho, clave = _tramo_diametro(props.get("DIAMETRO"))
+            etiquetas.append(
+                f"{_fmt_pulgadas(cortes[i-1])} – {_fmt_pulgadas(cortes[i])}")
 
-        leyenda.setdefault(clave, color)
+    grupos = [
+        {
+            "etiqueta": f"{etiquetas[i]} ({len(baldes[i])})",
+            "color": PALETA_DIAMETRO[min(i, len(PALETA_DIAMETRO) - 1)],
+            "ancho": ANCHOS_DIAMETRO[min(i, len(ANCHOS_DIAMETRO) - 1)],
+            "features": baldes[i],
+        }
+        for i in range(len(baldes)) if baldes[i]
+    ]
 
-        features.append({
-            "type": "Feature",
-            "properties": {**props, "color": color, "ancho": ancho},
-            "geometry": feat["geometry"],
+    if sin_dato:
+        grupos.append({
+            "etiqueta": f"sin dato ({len(sin_dato)})",
+            "color": COLOR_SIN_DATO,
+            "ancho": 1.0,
+            "features": sin_dato,
         })
 
-    if modo == "Empresa":
-        orden = sorted(leyenda.items(), key=lambda kv: kv[0])
-    else:
-        posicion = {e: i for i, (_, _, _, e) in enumerate(ESCALA_DIAMETRO)}
-        orden = sorted(leyenda.items(), key=lambda kv: posicion.get(kv[0], 99))
-
-    return {"type": "FeatureCollection", "features": features}, orden
+    return grupos
 
 
-def mostrar_leyenda(leyenda: list[tuple[str, list]], titulo: str):
+def mostrar_leyenda(grupos: list[dict], titulo: str):
     """Chips de color en una linea. `st.markdown` porque no hay widget nativo."""
-    if not leyenda:
+    if not grupos:
         return
 
     chips = "".join(
         f'<span style="display:inline-block;margin:0 14px 4px 0;white-space:nowrap;">'
-        f'<span style="display:inline-block;width:22px;height:4px;'
-        f'background:rgb({c[0]},{c[1]},{c[2]});vertical-align:middle;'
-        f'margin-right:6px;border-radius:2px;"></span>'
-        f'<span style="font-size:0.82rem;color:#444;">{etiqueta}</span></span>'
-        for etiqueta, c in leyenda
+        f'<span style="display:inline-block;width:24px;'
+        f'height:{max(2, round(g["ancho"]))}px;'
+        f'background:rgb({g["color"][0]},{g["color"][1]},{g["color"][2]});'
+        f'vertical-align:middle;margin-right:6px;border-radius:2px;"></span>'
+        f'<span style="font-size:0.82rem;color:#444;">{g["etiqueta"]}</span></span>'
+        for g in grupos
     )
 
     st.markdown(
@@ -476,16 +554,17 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas):
             pickable=True,
         ))
 
-    if ductos:
+    # Una capa por grupo, con el color como CONSTANTE. Ver `agrupar_ductos`.
+    for grupo in (ductos or []):
         capas.append(pdk.Layer(
             "GeoJsonLayer",
-            data=ductos,
+            data={"type": "FeatureCollection", "features": grupo["features"]},
             stroked=True,
             filled=False,
-            get_line_color="properties.color",
-            get_line_width="properties.ancho",
+            get_line_color=grupo["color"],
             line_width_units="pixels",
-            line_width_min_pixels=0.8,
+            get_line_width=grupo["ancho"],
+            line_width_min_pixels=grupo["ancho"],
             pickable=True,
         ))
 
@@ -630,9 +709,9 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     with c4:
         mostrar_etiquetas = st.checkbox("Nombres", value=True)
 
-    leyenda = []
+    grupos_ductos = []
     if ductos is not None and ver_ductos:
-        ductos, leyenda = colorear_ductos(ductos, modo_color)
+        grupos_ductos = agrupar_ductos(ductos, modo_color)
 
     solo_plantas = st.checkbox(
         "Solo flujos que terminan en planta", value=False,
@@ -649,7 +728,7 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             layers=_capas(
                 dibujables, flujos,
                 concesiones if ver_conces else None,
-                ductos if ver_ductos else None,
+                grupos_ductos if ver_ductos else None,
                 mostrar_etiquetas,
             ),
             initial_view_state=pdk.ViewState(
@@ -666,8 +745,8 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
         use_container_width=True,
     )
 
-    if leyenda:
-        mostrar_leyenda(leyenda, f"Ductos por {modo_color.lower()}:")
+    if grupos_ductos:
+        mostrar_leyenda(grupos_ductos, f"Ductos por {modo_color.lower()}:")
 
     # --- pie ---------------------------------------------------------------
     n_inferidos = int((dibujables["posicion"] == "inferida").sum())
