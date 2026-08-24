@@ -46,8 +46,13 @@ except ImportError:  # pragma: no cover
 from pipeline.cromatografia import clave_cruce
 
 
-DIR_GEO = Path("datos") / "geo"
-RUTA_NODOS = Path("datos") / "geo_nodos.csv"
+# Anclado a la raiz del repo, no al directorio desde donde se lanza Streamlit.
+# Con rutas relativas, `streamlit run app.py` parado en otra carpeta no encuentra
+# nada y el tab queda pidiendo un archivo que en realidad existe.
+RAIZ = Path(__file__).resolve().parent.parent
+
+DIR_GEO = RAIZ / "datos" / "geo"
+RUTA_NODOS = RAIZ / "datos" / "geo_nodos.csv"
 RUTA_CONCESIONES = DIR_GEO / "concesiones.geojson"
 RUTA_DUCTOS = DIR_GEO / "ductos.geojson"
 
@@ -64,10 +69,23 @@ RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 # Carga
 # ===========================================================================
 
-@st.cache_data(show_spinner=False)
-def cargar_nodos(ruta=RUTA_NODOS) -> pd.DataFrame:
-    """Lee geo_nodos.csv. Vacio si todavia no existe."""
+def _firma(ruta) -> tuple[str, float]:
+    """
+    Ruta + fecha de modificacion, para usar como clave de cache.
+
+    Sin esto, `st.cache_data` se queda con el resultado de la PRIMERA llamada.
+    Si alguien abre el tab antes de generar la geodata, queda cacheado el
+    DataFrame vacio y el mapa sigue diciendo que falta el archivo aunque ya
+    exista. Un archivo que todavia no existe firma con mtime 0, asi que en
+    cuanto se crea la firma cambia y el cache se invalida solo.
+    """
     ruta = Path(ruta)
+    return (str(ruta), ruta.stat().st_mtime if ruta.exists() else 0.0)
+
+
+@st.cache_data(show_spinner=False)
+def _leer_nodos(firma: tuple[str, float]) -> pd.DataFrame:
+    ruta = Path(firma[0])
 
     if not ruta.exists():
         return pd.DataFrame(columns=["nombre", "tipo", "lat", "lon", "clave"])
@@ -83,16 +101,25 @@ def cargar_nodos(ruta=RUTA_NODOS) -> pd.DataFrame:
     return nodos
 
 
+def cargar_nodos(ruta=RUTA_NODOS) -> pd.DataFrame:
+    """Lee geo_nodos.csv. Vacio si todavia no existe."""
+    return _leer_nodos(_firma(ruta))
+
+
 @st.cache_data(show_spinner=False)
-def cargar_geojson(ruta) -> dict | None:
-    """Lee un GeoJSON local. None si no esta."""
-    ruta = Path(ruta)
+def _leer_geojson(firma: tuple[str, float]) -> dict | None:
+    ruta = Path(firma[0])
 
     if not ruta.exists():
         return None
 
     with open(ruta, encoding="utf-8") as f:
         return json.load(f)
+
+
+def cargar_geojson(ruta) -> dict | None:
+    """Lee un GeoJSON local. None si no esta."""
+    return _leer_geojson(_firma(ruta))
 
 
 def _bbox(puntos: pd.DataFrame, margen: float = 0.4):
@@ -309,7 +336,7 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas):
 # ===========================================================================
 
 def _ayuda_sin_datos(que: str):
-    st.warning(f"Falta `{que}`.")
+    st.warning(f"No encuentro `{que}`.")
     st.caption(
         "Se genera una sola vez con `scripts/preparar_geo.py`, a partir de los "
         "GeoJSON de concesiones y ductos que se bajan a mano (o se exportan del "
