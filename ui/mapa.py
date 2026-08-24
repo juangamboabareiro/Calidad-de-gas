@@ -5,40 +5,34 @@ Que reemplaza
 -------------
 El tab "Red de Gasoductos" dibujaba un grafo de graphviz con ~140 aristas
 Area -> Gasoducto. Sin geografia y con esa cantidad de nodos queda ilegible, y
-ademas no dice nada que la tabla no diga mejor. Aca se cambia por un mapa.
+ademas no dice nada que la tabla no diga mejor.
 
-De donde sale el fondo
-----------------------
-Del servicio WMS publico de la Secretaria de Energia (sig.se.gob.ar/wmsenergia).
-Las capas que importan:
+TODO LOCAL
+----------
+La app no tiene salida a internet (firewall de IT). No hay WMS, no hay basemap
+de Carto, no hay tiles. `map_style=None` deja el lienzo vacio y el contexto
+geografico lo ponen dos GeoJSON versionados en el repo:
 
-    planosbase_concesiones_explotacion   poligonos de concesion CON los nombres
-    provincia_neuquen_gasoductos         trazas de gasoductos de Neuquen
-    enargas_gasoductos_distribucion      red de transporte y distribucion
+    datos/geo/concesiones.geojson   poligonos de concesion (el "fondo")
+    datos/geo/ductos.geojson        trazas de gasoductos
+    datos/geo_nodos.csv             un punto por area / gasoducto / planta
 
-No hay que descargar nada: deck.gl pide la imagen directo al WMS y la pone como
-capa de fondo (`BitmapLayer`). Si el servicio no responde, el mapa igual se
-dibuja sobre el basemap de Carto, solo que sin las concesiones.
+Se generan una sola vez con `scripts/preparar_geo.py`. Ver ese archivo para de
+donde bajar los originales.
 
-Que hay que cargar
-------------------
-`datos/geo_nodos.csv`, con una fila por area / gasoducto / planta:
+Sale mejor que con WMS, de paso: es vectorial, se puede estilar, responde al
+hover y no depende de que un servicio externo este arriba.
 
-    nombre,tipo,lat,lon,fuente,notas
-    Fortin de Piedra,area,-38.12,-68.94,centroide concesion,
-    TTY,planta,,,,falta cargar
-
-Las filas sin lat/lon no se dibujan y se listan en pantalla. El mapa funciona
-desde el primer nodo cargado; no hace falta completar los 130.
-
-Para llenarlo automaticamente ver `scripts/geo_desde_concesiones.py`, que saca
-los centroides del shapefile oficial y matchea por nombre con la misma tabla de
-alias que usa el pipeline.
+Degradado
+---------
+Sin pydeck avisa como instalarlo. Sin GeoJSON dibuja igual los nodos y los
+flujos, solo que sin fondo. Sin coordenadas explica que generar. Nunca deja el
+tab en blanco.
 """
 
 from __future__ import annotations
 
-import math
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -52,102 +46,56 @@ except ImportError:  # pragma: no cover
 from pipeline.cromatografia import clave_cruce
 
 
-RUTA_GEO = Path("datos") / "geo_nodos.csv"
-
-WMS_ENERGIA = "https://sig.se.gob.ar/wmsenergia"
-
-CAPAS_WMS = {
-    "Concesiones de explotación": "planosbase_concesiones_explotacion",
-    "Gasoductos de Neuquén": "provincia_neuquen_gasoductos",
-    "Red ENARGAS (transporte)": "enargas_gasoductos_distribucion",
-}
-
-# Basemap sin token: estilo Carto Positron.
-ESTILO_BASE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+DIR_GEO = Path("datos") / "geo"
+RUTA_NODOS = Path("datos") / "geo_nodos.csv"
+RUTA_CONCESIONES = DIR_GEO / "concesiones.geojson"
+RUTA_DUCTOS = DIR_GEO / "ductos.geojson"
 
 COLOR_TIPO = {
-    "planta": [200, 30, 40, 220],
-    "gasoducto": [30, 90, 160, 200],
-    "area": [90, 160, 90, 180],
+    "planta": [200, 30, 40, 230],
+    "gasoducto": [30, 90, 160, 210],
+    "area": [90, 160, 90, 190],
 }
 
-RADIO_TIPO = {"planta": 4200, "gasoducto": 2600, "area": 1600}
+RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 
 
 # ===========================================================================
-# Carga de coordenadas
+# Carga
 # ===========================================================================
 
 @st.cache_data(show_spinner=False)
-def cargar_geo(ruta=RUTA_GEO) -> pd.DataFrame:
-    """
-    Lee `geo_nodos.csv`. Devuelve vacio si el archivo no existe todavia.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Columnas nombre, tipo, lat, lon, clave (para cruzar con el modelo).
-    """
+def cargar_nodos(ruta=RUTA_NODOS) -> pd.DataFrame:
+    """Lee geo_nodos.csv. Vacio si todavia no existe."""
     ruta = Path(ruta)
 
     if not ruta.exists():
         return pd.DataFrame(columns=["nombre", "tipo", "lat", "lon", "clave"])
 
-    geo = pd.read_csv(ruta, comment="#")
+    nodos = pd.read_csv(ruta, comment="#")
 
     for col in ("lat", "lon"):
-        geo[col] = pd.to_numeric(geo.get(col), errors="coerce")
+        nodos[col] = pd.to_numeric(nodos.get(col), errors="coerce")
 
-    geo["tipo"] = geo.get("tipo", "area").fillna("area").str.strip().str.lower()
-    geo["clave"] = clave_cruce(geo["nombre"])
+    nodos["tipo"] = nodos.get("tipo", "area").fillna("area").str.strip().str.lower()
+    nodos["clave"] = clave_cruce(nodos["nombre"])
 
-    return geo
-
-
-def _mercator(lat: float, lon: float) -> tuple[float, float]:
-    """lat/lon -> EPSG:3857 en metros."""
-    x = lon * 20037508.34 / 180.0
-    y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
-
-    return x, y * 20037508.34 / 180.0
+    return nodos
 
 
-def url_wms(capas: list[str], bbox_ll: tuple[float, float, float, float],
-            ancho: int = 1600, alto: int = 1600) -> str:
-    """
-    Arma el GetMap del WMS para el bbox dado.
+@st.cache_data(show_spinner=False)
+def cargar_geojson(ruta) -> dict | None:
+    """Lee un GeoJSON local. None si no esta."""
+    ruta = Path(ruta)
 
-    Se pide en EPSG:3857 y no en 4326 a proposito: `BitmapLayer` ubica la imagen
-    en un rectangulo ya proyectado a Web Mercator, asi que una imagen en
-    lat/lon plano quedaria estirada verticalmente. Pidiendola en 3857 coincide.
+    if not ruta.exists():
+        return None
 
-    Parameters
-    ----------
-    bbox_ll : (oeste, sur, este, norte) en grados.
-    """
-    oeste, sur, este, norte = bbox_ll
-
-    x0, y0 = _mercator(sur, oeste)
-    x1, y1 = _mercator(norte, este)
-
-    params = {
-        "SERVICE": "WMS",
-        "VERSION": "1.1.1",
-        "REQUEST": "GetMap",
-        "LAYERS": ",".join(capas),
-        "SRS": "EPSG:3857",
-        "BBOX": f"{x0},{y0},{x1},{y1}",
-        "WIDTH": str(ancho),
-        "HEIGHT": str(alto),
-        "FORMAT": "image/png",
-        "TRANSPARENT": "TRUE",
-    }
-
-    return WMS_ENERGIA + "?" + "&".join(f"{k}={v}" for k, v in params.items())
+    with open(ruta, encoding="utf-8") as f:
+        return json.load(f)
 
 
-def _bbox(puntos: pd.DataFrame, margen: float = 0.35) -> tuple[float, float, float, float]:
-    """Rectangulo que contiene todos los nodos, con un margen en grados."""
+def _bbox(puntos: pd.DataFrame, margen: float = 0.4):
     return (
         float(puntos["lon"].min()) - margen,
         float(puntos["lat"].min()) - margen,
@@ -157,30 +105,22 @@ def _bbox(puntos: pd.DataFrame, margen: float = 0.35) -> tuple[float, float, flo
 
 
 # ===========================================================================
-# Armado de capas
+# Flujos
 # ===========================================================================
 
-def preparar_flujos(edges: pd.DataFrame, geo: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
     """
     Cruza las aristas origen->destino con las coordenadas.
-
-    Parameters
-    ----------
-    edges : pandas.DataFrame
-        Columnas origen, destino, valor (lo que ya arma `red_gasoductos`).
-    geo : pandas.DataFrame
-        Salida de `cargar_geo`.
 
     Returns
     -------
     flujos : pandas.DataFrame
-        Solo las aristas con las DOS puntas georreferenciadas, con columnas
-        origen_lonlat / destino_lonlat listas para el ArcLayer.
-    sin_coordenadas : list[str]
+        Solo las aristas con las DOS puntas georreferenciadas.
+    faltantes : list[str]
         Nombres que aparecen en las aristas y no tienen lat/lon.
     """
-    con_coord = geo.dropna(subset=["lat", "lon"])
-    mapa = {
+    con_coord = nodos.dropna(subset=["lat", "lon"])
+    coords = {
         fila.clave: [float(fila.lon), float(fila.lat)]
         for fila in con_coord.itertuples()
     }
@@ -191,96 +131,103 @@ def preparar_flujos(edges: pd.DataFrame, geo: pd.DataFrame) -> tuple[pd.DataFram
     flujos["k_origen"] = clave_cruce(flujos["origen"])
     flujos["k_destino"] = clave_cruce(flujos["destino"])
 
-    faltan = sorted(
-        {k for k in flujos["k_origen"] if k not in mapa}
-        | {k for k in flujos["k_destino"] if k not in mapa}
-    )
-
-    nombres_faltantes = sorted(
-        set(flujos.loc[~flujos["k_origen"].isin(mapa), "origen"])
-        | set(flujos.loc[~flujos["k_destino"].isin(mapa), "destino"])
+    faltantes = sorted(
+        set(flujos.loc[~flujos["k_origen"].isin(coords), "origen"].astype(str))
+        | set(flujos.loc[~flujos["k_destino"].isin(coords), "destino"].astype(str))
     )
 
     flujos = flujos[
-        flujos["k_origen"].isin(mapa) & flujos["k_destino"].isin(mapa)
+        flujos["k_origen"].isin(coords) & flujos["k_destino"].isin(coords)
     ].copy()
 
     if flujos.empty:
-        return flujos, nombres_faltantes
+        return flujos, faltantes
 
-    flujos["origen_lonlat"] = flujos["k_origen"].map(mapa)
-    flujos["destino_lonlat"] = flujos["k_destino"].map(mapa)
+    flujos["origen_lonlat"] = flujos["k_origen"].map(coords)
+    flujos["destino_lonlat"] = flujos["k_destino"].map(coords)
 
-    # Ancho proporcional a la raiz del volumen: con lineal, el flujo mas grande
-    # tapa todo lo demas (hay dos ordenes de magnitud entre el mayor y el menor).
+    # Ancho por la RAIZ del volumen. En escala lineal hay dos ordenes de
+    # magnitud entre el flujo mayor y el menor, y el mayor tapa todo lo demas.
     maximo = float(flujos["valor"].max())
     flujos["ancho"] = 1.0 + 11.0 * (flujos["valor"] / maximo) ** 0.5
 
     flujos["etiqueta"] = (
         flujos["origen"].astype(str) + " → " + flujos["destino"].astype(str)
+        + "  ·  " + flujos["valor"].map(lambda v: f"{v:,.0f}")
     )
 
-    return flujos, nombres_faltantes
+    return flujos, faltantes
 
 
-def _capas(geo_dibujable, flujos, capas_wms, mostrar_etiquetas):
+# ===========================================================================
+# Capas
+# ===========================================================================
+
+def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas):
     capas = []
 
-    if capas_wms:
-        capas.append(
-            pdk.Layer(
-                "BitmapLayer",
-                data=None,
-                image=url_wms(capas_wms, _bbox(geo_dibujable)),
-                bounds=list(_bbox(geo_dibujable)),
-                opacity=0.55,
-            )
-        )
+    if concesiones:
+        capas.append(pdk.Layer(
+            "GeoJsonLayer",
+            data=concesiones,
+            stroked=True,
+            filled=True,
+            get_fill_color=[225, 228, 230, 90],
+            get_line_color=[150, 158, 165, 200],
+            line_width_min_pixels=0.6,
+            pickable=True,
+        ))
+
+    if ductos:
+        capas.append(pdk.Layer(
+            "GeoJsonLayer",
+            data=ductos,
+            stroked=True,
+            filled=False,
+            get_line_color=[120, 120, 130, 220],
+            line_width_min_pixels=1.4,
+            pickable=False,
+        ))
 
     if len(flujos):
-        capas.append(
-            pdk.Layer(
-                "ArcLayer",
-                data=flujos,
-                get_source_position="origen_lonlat",
-                get_target_position="destino_lonlat",
-                get_source_color=[90, 160, 90, 150],
-                get_target_color=[200, 30, 40, 190],
-                get_width="ancho",
-                pickable=True,
-                auto_highlight=True,
-            )
-        )
-
-    capas.append(
-        pdk.Layer(
-            "ScatterplotLayer",
-            data=geo_dibujable,
-            get_position=["lon", "lat"],
-            get_fill_color="color",
-            get_radius="radio",
-            radius_min_pixels=4,
-            radius_max_pixels=22,
+        capas.append(pdk.Layer(
+            "ArcLayer",
+            data=flujos,
+            get_source_position="origen_lonlat",
+            get_target_position="destino_lonlat",
+            get_source_color=[90, 160, 90, 150],
+            get_target_color=[200, 30, 40, 200],
+            get_width="ancho",
             pickable=True,
-            stroked=True,
-            get_line_color=[255, 255, 255, 200],
-            line_width_min_pixels=1,
-        )
-    )
+            auto_highlight=True,
+        ))
+
+    capas.append(pdk.Layer(
+        "ScatterplotLayer",
+        data=nodos,
+        get_position=["lon", "lat"],
+        get_fill_color="color",
+        get_radius="radio",
+        radius_min_pixels=4,
+        radius_max_pixels=20,
+        pickable=True,
+        stroked=True,
+        get_line_color=[255, 255, 255, 220],
+        line_width_min_pixels=1,
+    ))
 
     if mostrar_etiquetas:
-        capas.append(
-            pdk.Layer(
-                "TextLayer",
-                data=geo_dibujable[geo_dibujable["tipo"] != "area"],
-                get_position=["lon", "lat"],
-                get_text="nombre",
-                get_size=13,
-                get_color=[25, 25, 25, 230],
-                get_alignment_baseline="'bottom'",
-                get_pixel_offset=[0, -14],
-            )
-        )
+        # Solo plantas y gasoductos: 130 nombres de area encimados no se leen.
+        capas.append(pdk.Layer(
+            "TextLayer",
+            data=nodos[nodos["tipo"] != "area"],
+            get_position=["lon", "lat"],
+            get_text="nombre",
+            get_size=13,
+            get_color=[20, 20, 20, 235],
+            get_alignment_baseline="'bottom'",
+            get_pixel_offset=[0, -14],
+        ))
 
     return capas
 
@@ -289,14 +236,17 @@ def _capas(geo_dibujable, flujos, capas_wms, mostrar_etiquetas):
 # Panel
 # ===========================================================================
 
-def panel_mapa(resultados: dict, ruta_geo=RUTA_GEO):
-    """
-    Dibuja el tab de red sobre el mapa.
+def _ayuda_sin_datos(que: str):
+    st.warning(f"Falta `{que}`.")
+    st.caption(
+        "Se genera una sola vez con `scripts/preparar_geo.py`, a partir de los "
+        "GeoJSON de concesiones y ductos que se bajan a mano (o se exportan del "
+        "GIS interno). Mirá el docstring de ese script."
+    )
 
-    Degrada de a poco: sin pydeck avisa como instalarlo, sin archivo de
-    coordenadas explica que cargar, y con coordenadas parciales dibuja lo que
-    hay y lista lo que falta. En ningun caso deja el tab en blanco.
-    """
+
+def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
+    """Dibuja el tab de red sobre el mapa, con geodata 100% local."""
     st.subheader("Red de gasoductos")
 
     if pdk is None:
@@ -309,74 +259,82 @@ def panel_mapa(resultados: dict, ruta_geo=RUTA_GEO):
         st.info("No hay flujos para este período.")
         return
 
-    geo = cargar_geo(ruta_geo)
+    nodos = cargar_nodos(ruta_nodos)
 
-    if geo.empty:
-        st.warning(
-            f"Todavía no existe `{ruta_geo}`. El mapa necesita una fila por "
-            "área / gasoducto / planta con sus coordenadas."
-        )
-        st.caption(
-            "Podés generarlo con `scripts/geo_desde_concesiones.py`, que saca los "
-            "centroides del shapefile oficial de concesiones y los matchea por "
-            "nombre con la tabla de alias del pipeline."
-        )
+    if nodos.empty:
+        _ayuda_sin_datos(str(ruta_nodos))
         return
 
-    flujos, faltantes = preparar_flujos(edges, geo)
+    dibujables = nodos.dropna(subset=["lat", "lon"]).copy()
 
-    geo_dibujable = geo.dropna(subset=["lat", "lon"]).copy()
-
-    if geo_dibujable.empty:
-        st.warning("El archivo de coordenadas existe pero no tiene ninguna fila con lat/lon.")
+    if dibujables.empty:
+        st.warning(f"`{ruta_nodos}` existe pero ninguna fila tiene lat/lon todavía.")
         return
 
-    geo_dibujable["color"] = geo_dibujable["tipo"].map(COLOR_TIPO).apply(
+    flujos, faltantes = preparar_flujos(edges, nodos)
+
+    dibujables["color"] = dibujables["tipo"].map(COLOR_TIPO).apply(
         lambda c: c if isinstance(c, list) else COLOR_TIPO["area"])
-    geo_dibujable["radio"] = geo_dibujable["tipo"].map(RADIO_TIPO).fillna(1600)
+    dibujables["radio"] = dibujables["tipo"].map(RADIO_TIPO).fillna(1500)
+
+    concesiones = cargar_geojson(RUTA_CONCESIONES)
+    ductos = cargar_geojson(RUTA_DUCTOS)
 
     # --- controles ---------------------------------------------------------
-    c1, c2 = st.columns([3, 2])
+    c1, c2, c3 = st.columns(3)
     with c1:
-        elegidas = st.multiselect(
-            "Capas oficiales de fondo (WMS Secretaría de Energía)",
-            list(CAPAS_WMS.keys()),
-            default=["Concesiones de explotación"],
-        )
+        ver_conces = st.checkbox("Concesiones", value=concesiones is not None,
+                                 disabled=concesiones is None)
     with c2:
-        mostrar_etiquetas = st.checkbox("Nombres de plantas y gasoductos", value=True)
-        solo_plantas = st.checkbox("Solo flujos que terminan en planta", value=False)
+        ver_ductos = st.checkbox("Trazas de ductos", value=ductos is not None,
+                                 disabled=ductos is None)
+    with c3:
+        mostrar_etiquetas = st.checkbox("Nombres", value=True)
+
+    solo_plantas = st.checkbox(
+        "Solo flujos que terminan en planta", value=False,
+        help="Filtra las aristas hacia gasoductos finales, que son la mayoría.")
 
     if solo_plantas:
-        plantas = set(geo.loc[geo["tipo"] == "planta", "clave"])
+        plantas = set(nodos.loc[nodos["tipo"] == "planta", "clave"])
         flujos = flujos[flujos["k_destino"].isin(plantas)]
 
-    capas_wms = [CAPAS_WMS[n] for n in elegidas]
-
-    oeste, sur, este, norte = _bbox(geo_dibujable)
-
-    vista = pdk.ViewState(
-        latitude=(sur + norte) / 2,
-        longitude=(oeste + este) / 2,
-        zoom=6.2,
-        pitch=35,
-    )
+    oeste, sur, este, norte = _bbox(dibujables)
 
     st.pydeck_chart(
         pdk.Deck(
-            layers=_capas(geo_dibujable, flujos, capas_wms, mostrar_etiquetas),
-            initial_view_state=vista,
-            map_style=ESTILO_BASE,
-            tooltip={"text": "{nombre}\n{etiqueta}"},
+            layers=_capas(
+                dibujables, flujos,
+                concesiones if ver_conces else None,
+                ductos if ver_ductos else None,
+                mostrar_etiquetas,
+            ),
+            initial_view_state=pdk.ViewState(
+                latitude=(sur + norte) / 2,
+                longitude=(oeste + este) / 2,
+                zoom=6.2,
+                pitch=35,
+            ),
+            # Sin basemap remoto: el firewall bloquea la salida y ademas el
+            # contexto ya lo dan las concesiones.
+            map_style=None,
+            tooltip={"text": "{nombre}{etiqueta}"},
         ),
         use_container_width=True,
     )
 
     # --- pie ---------------------------------------------------------------
     c1, c2, c3 = st.columns(3)
-    c1.metric("Nodos en el mapa", len(geo_dibujable))
+    c1.metric("Nodos en el mapa", len(dibujables))
     c2.metric("Flujos dibujados", len(flujos))
     c3.metric("Sin coordenadas", len(faltantes))
+
+    if concesiones is None and ductos is None:
+        st.info(
+            "Se está dibujando sin fondo geográfico. Generá "
+            "`datos/geo/concesiones.geojson` con `scripts/preparar_geo.py` "
+            "para ver los polígonos de concesión."
+        )
 
     if faltantes:
         with st.expander(f"{len(faltantes)} nodos sin coordenadas — no se dibujan"):
@@ -388,6 +346,5 @@ def panel_mapa(resultados: dict, ruta_geo=RUTA_GEO):
 
     st.caption(
         "El grosor del arco va con la raíz del volumen inyectado, no con el "
-        "volumen: en escala lineal el flujo más grande tapa a todos los demás. "
-        "Fondo: WMS público de la Secretaría de Energía."
+        "volumen: en escala lineal el flujo más grande tapa a todos los demás."
     )
