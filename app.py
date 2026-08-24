@@ -71,6 +71,7 @@ from io_.loaders import (
     load_matriz_inyecciones,
 )
 from ui.esquemas import mostrar_esquema_planta
+from ui.mapa import panel_mapa
 from ui.tablas import panel_tablas
 from domain.propiedades_gas import calcular_propiedades_gas, calcular_retenidos
 from pipeline.inyeccion_std import calcular_inyeccion_std
@@ -328,23 +329,6 @@ def _dot_cascada(plantas: dict, tbx_en_servicio: bool) -> str:
     if f_mega["bypass"] > 0:
         lineas.append(f'  "MEGA" -> byp [label="{_fmt(_a_mm(f_mega["bypass"]), 2)}", style=dashed];')
 
-    lineas.append("}")
-    return "\n".join(lineas)
-
-
-def _dot_red_gasoductos(edges: pd.DataFrame) -> str:
-    lineas = [
-        "digraph G {",
-        "  rankdir=LR;",
-        '  node [shape=box, style="rounded,filled", fillcolor="#EAF2F8", fontname="Arial"];',
-        '  edge [fontname="Arial", fontsize=9];',
-    ]
-    for _, fila in edges.iterrows():
-        origen = str(fila["origen"]).replace('"', "")
-        destino = str(fila["destino"]).replace('"', "")
-        if not origen or not destino or destino in ("0", "nan"):
-            continue
-        lineas.append(f'  "{origen}" -> "{destino}" [label="{float(fila["valor"]):,.0f}"];')
     lineas.append("}")
     return "\n".join(lineas)
 
@@ -755,7 +739,7 @@ flujos_plantas = resultados["flujos_plantas"]
 tbx_en_servicio_res = resultados["tbx_en_servicio"]
 
 tab_resumen, tab_cascada, tab_tablas, tab_red, tab_tbx, tab_dp, tab_mega = st.tabs(
-    ["📊 Resumen", "🔗 Cascada", "📋 Tablas totales", "🕸️ Red de Gasoductos",
+    ["📊 Resumen", "🔗 Cascada", "📋 Tablas totales", "🗺️ Mapa de la red",
      "TTY - TBX", "TTY - Dew Point", "MEGA"]
 )
 
@@ -811,12 +795,7 @@ with tab_tablas:
     panel_tablas(resultados)
 
 with tab_red:
-    st.subheader("Red de gasoductos hacia las plantas")
-    edges = resultados.get("red_gasoductos")
-    if edges is None or len(edges) == 0:
-        st.info("No hay datos de red de gasoductos para este período.")
-    else:
-        st.graphviz_chart(_dot_red_gasoductos(edges), use_container_width=True)
+    panel_mapa(resultados)
 
 
 def _mostrar_planta(tab, nombre_planta, datos):
