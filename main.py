@@ -30,7 +30,7 @@ from pipeline.cromatografia import (
 )
 from pipeline.preprocesamiento import validar_destinos_matriz
 
-
+from scripts.preparar_geo import compactar, leer_geojson, argparse
 
 
 # endregion
@@ -265,3 +265,11 @@ print(perdido.sum().sum())
 gasoductos = {g for g in inyeccion_area["Gasoducto"].dropna() if isinstance(g, str)}
 print(sorted(gasoductos - set(yacimientos.columns)))
 print(sorted(c for c in yacimientos.columns if isinstance(c, str)))
+
+
+import geopandas as gpd
+g = gpd.read_file("datos/crudo/concesiones-hidrocarburos.shp")
+print(g.crs)
+print(list(g.columns))
+print(g.head(3).drop(columns="geometry").to_string())
+

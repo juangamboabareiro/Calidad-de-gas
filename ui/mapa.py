@@ -105,6 +105,78 @@ def _bbox(puntos: pd.DataFrame, margen: float = 0.4):
 
 
 # ===========================================================================
+# Posicion derivada de los gasoductos
+# ===========================================================================
+
+def completar_gasoductos(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ubica los gasoductos sin coordenadas en el baricentro de lo que les inyecta.
+
+    Un gasoducto es una LINEA, no un punto, asi que no tiene una coordenada
+    "verdadera" que cargar. Y mientras no la tenga, ninguna arista se dibuja:
+    los flujos van area -> gasoducto y hacen falta las dos puntas.
+
+    Se lo ubica entonces en el centroide de las areas que le inyectan,
+    ponderado por volumen. Es una posicion ESQUEMATICA: no es donde pasa el
+    ducto, es desde donde le llega el gas. Sirve para que los arcos converjan
+    en un lugar con sentido; para la traza real estan las lineas del GeoJSON.
+
+    Cualquier gasoducto que ya tenga lat/lon cargada a mano se respeta: esta
+    funcion solo rellena huecos.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `nodos` con las coordenadas completadas y la columna `derivada` en True
+        para los que se calcularon aca.
+    """
+    salida = nodos.copy()
+
+    if "derivada" not in salida.columns:
+        salida["derivada"] = False
+
+    coords = {
+        fila.clave: (float(fila.lon), float(fila.lat))
+        for fila in salida.dropna(subset=["lat", "lon"]).itertuples()
+    }
+
+    faltan = salida[
+        (salida["tipo"] == "gasoducto") & salida["lat"].isna()
+    ]
+
+    if faltan.empty or edges is None or not len(edges):
+        return salida
+
+    aristas = edges.copy()
+    aristas["k_origen"] = clave_cruce(aristas["origen"])
+    aristas["k_destino"] = clave_cruce(aristas["destino"])
+    aristas["valor"] = pd.to_numeric(aristas["valor"], errors="coerce").fillna(0)
+
+    for idx, nodo in faltan.iterrows():
+        entrantes = aristas[
+            (aristas["k_destino"] == nodo["clave"]) & (aristas["valor"] > 0)
+        ]
+        entrantes = entrantes[entrantes["k_origen"].isin(coords)]
+
+        if entrantes.empty:
+            continue
+
+        peso = entrantes["valor"].sum()
+
+        if peso <= 0:
+            continue
+
+        lon = sum(coords[k][0] * v for k, v in
+                  zip(entrantes["k_origen"], entrantes["valor"])) / peso
+        lat = sum(coords[k][1] * v for k, v in
+                  zip(entrantes["k_origen"], entrantes["valor"])) / peso
+
+        salida.loc[idx, ["lat", "lon", "derivada"]] = [lat, lon, True]
+
+    return salida
+
+
+# ===========================================================================
 # Flujos
 # ===========================================================================
 
@@ -265,6 +337,10 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
         _ayuda_sin_datos(str(ruta_nodos))
         return
 
+    # Los gasoductos casi nunca tienen coordenada cargada (son lineas). Sin
+    # esto ninguna arista tiene sus dos puntas y el mapa sale sin un solo arco.
+    nodos = completar_gasoductos(nodos, edges)
+
     dibujables = nodos.dropna(subset=["lat", "lon"]).copy()
 
     if dibujables.empty:
@@ -276,6 +352,13 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     dibujables["color"] = dibujables["tipo"].map(COLOR_TIPO).apply(
         lambda c: c if isinstance(c, list) else COLOR_TIPO["area"])
     dibujables["radio"] = dibujables["tipo"].map(RADIO_TIPO).fillna(1500)
+
+    # Las posiciones derivadas se dibujan mas transparentes: son esquematicas y
+    # no conviene que se lean igual que un dato cargado.
+    if "derivada" in dibujables.columns:
+        derivadas = dibujables["derivada"].fillna(False).astype(bool)
+        dibujables.loc[derivadas, "color"] = dibujables.loc[derivadas, "color"].apply(
+            lambda c: c[:3] + [110])
 
     concesiones = cargar_geojson(RUTA_CONCESIONES)
     ductos = cargar_geojson(RUTA_DUCTOS)
@@ -328,6 +411,15 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     c1.metric("Nodos en el mapa", len(dibujables))
     c2.metric("Flujos dibujados", len(flujos))
     c3.metric("Sin coordenadas", len(faltantes))
+
+    n_derivadas = int(dibujables.get("derivada", pd.Series(dtype=bool)).fillna(False).sum())
+    if n_derivadas:
+        st.caption(
+            f"{n_derivadas} gasoductos se ubicaron en el baricentro de las áreas que "
+            "les inyectan, ponderado por volumen. Es una posición esquemática, no la "
+            "traza real: se dibujan más tenues. Cargales lat/lon en `geo_nodos.csv` "
+            "para fijarlos."
+        )
 
     if concesiones is None and ductos is None:
         st.info(

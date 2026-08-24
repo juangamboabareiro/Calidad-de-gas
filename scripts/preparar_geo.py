@@ -44,7 +44,9 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -83,6 +85,8 @@ NODOS_MANUALES = [
 ]
 
 
+
+
 # ===========================================================================
 # Lectura
 # ===========================================================================
@@ -107,11 +111,36 @@ def leer_geojson(ruta: Path) -> dict:
     return json.loads(gpd.read_file(ruta).to_crs(epsg=4326).to_json())
 
 
+def _normalizar_clave(texto: str) -> str:
+    """minusculas, sin acentos, sin separadores. NOMBRE_DE_ -> nombrede"""
+    limpio = unicodedata.normalize("NFKD", str(texto))
+    limpio = "".join(c for c in limpio if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", limpio.lower())
+
+
 def _nombre_de(props: dict) -> str | None:
+    """
+    Busca el nombre del area entre las propiedades de la feature.
+
+    El .dbf de un shapefile trunca los encabezados a 10 caracteres, asi que el
+    campo real puede llegar como NOMBRE_DE_ (por NOMBRE_DEL_AREA), NOM_AREA,
+    DESCRIPCIO... Por eso no alcanza con una lista de nombres exactos: se
+    compara normalizado y por PREFIJO, que cubre cualquier truncamiento.
+    """
+    normalizadas = {_normalizar_clave(k): k for k in props}
+
+    # 1) coincidencia exacta con la lista, normalizada
     for clave in CLAVES_NOMBRE:
-        valor = props.get(clave)
-        if valor and str(valor).strip():
-            return str(valor).strip()
+        real = normalizadas.get(_normalizar_clave(clave))
+        if real and str(props[real]).strip() not in ("", "None", "nan"):
+            return str(props[real]).strip()
+
+    # 2) cualquier propiedad que empiece con "nombre", "area" o "yacimiento"
+    for prefijo in ("nombre", "area", "yacimiento", "concesion"):
+        for norm, real in normalizadas.items():
+            if norm.startswith(prefijo) and str(props[real]).strip() not in ("", "None", "nan"):
+                return str(props[real]).strip()
+
     return None
 
 
@@ -318,9 +347,24 @@ def main():
     DIR_GEO.mkdir(parents=True, exist_ok=True)
 
     print(f"Leyendo {args.concesiones}...")
-    conces = compactar(leer_geojson(args.concesiones), ["empresa", "provincia"])
+    
+    conces = compactar(leer_geojson(args.concesiones), ["EMPRESA_OP", "CODIGO_DE_"])
     conces = recortar(conces, bbox)
     print(f"  {len(conces['features'])} concesiones dentro del bbox")
+
+    con_nombre = sum(1 for f in conces["features"] if f["properties"].get("nombre"))
+
+    if conces["features"] and not con_nombre:
+        disponibles = sorted(conces["features"][0]["properties"])
+        raise SystemExit(
+            "\nNinguna concesion trajo nombre: sin eso no se puede cruzar con el\n"
+            "modelo y el CSV sale vacio de areas.\n"
+            f"Propiedades disponibles en la primera feature: {disponibles}\n"
+            "Agrega la que corresponda a CLAVES_NOMBRE, arriba en este archivo."
+        )
+
+    if con_nombre < len(conces["features"]):
+        print(f"  OJO {len(conces['features']) - con_nombre} sin nombre, se descartan")
 
     destino = DIR_GEO / "concesiones.geojson"
     destino.write_text(json.dumps(conces, separators=(",", ":")), encoding="utf-8")
