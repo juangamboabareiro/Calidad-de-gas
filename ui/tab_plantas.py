@@ -40,38 +40,19 @@ from ui.compat import ancho, arrow_safe
 
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
 from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
-# El sub-panel de gasoductos se importa de forma tolerante A PROPOSITO.
-#
-# `app.py` importa este modulo a nivel de archivo, asi que un ImportError aca
-# tumba el tablero ENTERO: los ocho tabs, incluidos los siete que no tienen nada
-# que ver con el sandbox. Que falte un archivo opcional no puede dejar sin
-# tablero a alguien que solo queria mirar el reparto del gas.
-#
-# Si el paquete `pipeline.gasoductos` no esta, el tab arranca igual y el
-# sub-tab de ductos explica que falta y como resolverlo.
-try:
-    from ui.gasoductos_editor import (
-        panel_gasoductos, obtener_intervenciones,
-        configurar_scope as configurar_scope_gd,
-    )
-    from pipeline.gasoductos.intervenciones import aplicar_intervenciones
-    GASODUCTOS_DISPONIBLE = True
-    ERROR_GASODUCTOS = None
-except ImportError as _e:
-    GASODUCTOS_DISPONIBLE = False
-    ERROR_GASODUCTOS = str(_e)
-
-    def panel_gasoductos(*a, **k):
-        return []
-
-    def obtener_intervenciones():
-        return []
-
-    def configurar_scope_gd(_scope):
-        pass
-
-    def aplicar_intervenciones(*a, **k):
-        raise RuntimeError("pipeline.gasoductos no está instalado")
+# Todo lo de gasoductos entra por `ui.gasoductos_editor`, que es la unica
+# frontera con `pipeline.gasoductos` y NUNCA falla al importarse: si el paquete
+# no esta, expone las mismas funciones devolviendo vacio. Importar
+# `aplicar_intervenciones` directo del pipeline seria abrir una segunda puerta,
+# y alcanza con que una quede sin defensa para tumbar el tablero entero.
+from ui.gasoductos_editor import (
+    panel_gasoductos,
+    obtener_intervenciones,
+    aplicar_intervenciones,
+    configurar_scope as configurar_scope_gd,
+    DISPONIBLE as GASODUCTOS_DISPONIBLE,
+    MOTIVO as ERROR_GASODUCTOS,
+)
 
 
 CLAVE_RESULTADO = "sandbox_resultado"
@@ -206,22 +187,12 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
         )
 
     with sub_ductos:
-        if not GASODUCTOS_DISPONIBLE:
-            st.error(
-                "El módulo de gasoductos no está instalado: "
-                f"`{ERROR_GASODUCTOS}`.\n\n"
-                "Falta la carpeta **`pipeline/gasoductos/`** en el repo, con "
-                "`__init__.py` e `intervenciones.py`. El resto del tablero "
-                "funciona igual."
-            )
-            intervenciones = []
-        else:
-            intervenciones = panel_gasoductos(
-                tabla_yacimientos=comunes.get("tabla_total_yacimientos"),
-                tabla_flujos_directos=comunes.get("tabla_total_flujos_directos"),
-                compuestos=compuestos,
-                factor_mm=factor_mm,
-            )
+        intervenciones = panel_gasoductos(
+            tabla_yacimientos=comunes.get("tabla_total_yacimientos"),
+            tabla_flujos_directos=comunes.get("tabla_total_flujos_directos"),
+            compuestos=compuestos,
+            factor_mm=factor_mm,
+        )
 
     st.divider()
     correr = st.button(

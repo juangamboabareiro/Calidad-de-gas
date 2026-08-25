@@ -253,8 +253,9 @@ def _bloque_escenarios(registro):
     import json as _json
 
     from ui.escenarios import serializar, partir, resumen as resumen_escenario
-    from ui.gasoductos_editor import obtener_intervenciones
-    from pipeline.gasoductos.intervenciones import Intervencion
+    # Por la frontera unica: `ui.gasoductos_editor` no falla aunque el paquete
+    # `pipeline.gasoductos` no este instalado.
+    from ui.gasoductos_editor import obtener_intervenciones, Intervencion
 
     st.divider()
     st.caption("**Escenarios** — incluyen plantas y gasoductos")
@@ -269,7 +270,17 @@ def _bloque_escenarios(registro):
         # escenarios distintos. Mezclarlas no tiene un significado claro.
         intervenciones = obtener_intervenciones()
         intervenciones.clear()
-        intervenciones.extend(Intervencion.desde_dict(d) for d in ductos_json)
+
+        if ductos_json and Intervencion is None:
+            # El escenario trae ductos pero el paquete no esta instalado. Se
+            # avisa en vez de reventar: las plantas del escenario ya se
+            # aplicaron y perderlas por esto seria peor.
+            st.warning(
+                f"El escenario trae {len(ductos_json)} intervención(es) sobre "
+                "ductos, pero falta `pipeline/gasoductos/`. Se cargaron sólo "
+                "las plantas.")
+        elif ductos_json:
+            intervenciones.extend(Intervencion.desde_dict(d) for d in ductos_json)
 
         # Las cromas del escenario vienen adentro de cada planta. Hay que
         # limpiar el buffer del uploader: si no, `_aplicar_cromas` se las pisa

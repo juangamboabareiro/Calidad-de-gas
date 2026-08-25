@@ -18,13 +18,52 @@ import streamlit as st
 
 from ui.compat import ancho, arrow_safe
 
-from pipeline.gasoductos.intervenciones import (
-    Intervencion,
-    areas_disponibles,
-    destinos_area,
-    gasoductos_disponibles,
-    volumen_area,
-)
+# ---------------------------------------------------------------------------
+# ESTE modulo es la unica frontera con `pipeline.gasoductos`.
+#
+# Lo importan `tab_plantas` (para el sub-tab) y `plantas_editor` (para guardar
+# las intervenciones en un escenario). Si cada uno se defendiera por su cuenta,
+# alcanza con que UNO se olvide para que un archivo faltante tumbe el tablero
+# entero — que es exactamente lo que paso.
+#
+# Entonces la defensa vive aca y en un solo lugar: importar
+# `ui.gasoductos_editor` NUNCA falla. Si el paquete no esta, las funciones
+# existen igual, devuelven vacio, y `panel_gasoductos` explica que falta.
+# ---------------------------------------------------------------------------
+
+try:
+    from pipeline.gasoductos.intervenciones import (
+        Intervencion,
+        aplicar_intervenciones,
+        areas_disponibles,
+        destinos_area,
+        gasoductos_disponibles,
+        volumen_area,
+    )
+    DISPONIBLE = True
+    MOTIVO = None
+except ImportError as _e:
+    DISPONIBLE = False
+    MOTIVO = str(_e)
+
+    Intervencion = None
+
+    def aplicar_intervenciones(*a, **k):
+        raise RuntimeError(f"pipeline.gasoductos no está disponible: {MOTIVO}")
+
+    def areas_disponibles(*a, **k):
+        return []
+
+    def destinos_area(*a, **k):
+        import pandas as _pd
+        return _pd.Series(dtype="float64")
+
+    def gasoductos_disponibles(*a, **k):
+        return []
+
+    def volumen_area(*a, **k):
+        return 0.0
+
 from io_.cromatografias_planta import cargar_cromas_extra
 
 
@@ -73,6 +112,15 @@ def panel_gasoductos(tabla_yacimientos, tabla_flujos_directos, compuestos,
     intervenciones = obtener_intervenciones()
 
     st.markdown("### 🛢️ Gasoductos")
+
+    if not DISPONIBLE:
+        st.error(
+            f"Falta el paquete **`pipeline/gasoductos/`**: `{MOTIVO}`.\n\n"
+            "Tienen que existir en el repo los dos archivos:\n"
+            "- `pipeline/gasoductos/__init__.py`\n"
+            "- `pipeline/gasoductos/intervenciones.py`\n\n"
+            "El resto del tablero funciona igual.")
+        return intervenciones
     st.caption(
         "El volumen que inyecta cada **área** no cambia: un ducto no crea ni "
         "destruye gas, sólo cambia por dónde sale. Toda intervención es una "
