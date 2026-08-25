@@ -94,6 +94,7 @@ from outputs.writers import guardar
 from ui.diagnosticos import capturar, mostrar as mostrar_diagnostico
 
 from ui.tab_plantas import panel_tab_plantas
+from ui.tab_graphs import panel_graphs
 
 
 
@@ -116,6 +117,27 @@ COLUMNAS_FLUJOS = [
 # ===========================================================================
 # Helpers de presentación
 # ===========================================================================
+
+class _StatusMudo:
+    """Reemplazo de `st.status` para las corridas en lote de la serie temporal.
+
+    Sin esto, barrer 24 meses deja 96 widgets de status colgados en la pagina.
+    Misma interfaz (`with` + `.update()`) asi `ejecutar_pipeline` no se bifurca.
+    """
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *excepcion):
+        return False
+
+    def update(self, **kwargs):
+        pass
+
+
+def _status(label, silencioso):
+    return _StatusMudo() if silencioso else st.status(label, expanded=False)
+
 
 def _a_dataframe_seguro(obj, nombre_valor="Valor"):
     """Convierte Series / DataFrame / escalares a algo presentable."""
@@ -474,6 +496,36 @@ guardar_csvs = st.sidebar.checkbox("Guardar CSVs en disco al ejecutar", value=Fa
 
 run = st.sidebar.button("▶️ Ejecutar pipeline", type="primary", use_container_width=True)
 
+st.sidebar.header("7. Serie temporal")
+st.sidebar.caption(
+    "Alimenta el tab **Graphs**. Corre el pipeline una vez por mes del rango "
+    "con los mismos parámetros de capacidad de arriba, así que un rango largo "
+    "tarda: son N corridas completas."
+)
+serie_desde_str = st.sidebar.text_input(
+    "Desde (MM-YYYY)",
+    value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
+    key="serie_desde",
+)
+serie_hasta_str = st.sidebar.text_input(
+    "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
+
+try:
+    serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()
+    serie_hasta = pd.Timestamp(serie_hasta_str.replace("/", "-")).normalize()
+    periodos_serie = list(pd.date_range(serie_desde, serie_hasta, freq="MS"))
+except Exception:
+    st.sidebar.error("Rango inválido (formato MM-YYYY).")
+    periodos_serie = []
+
+if periodos_serie:
+    st.sidebar.caption(f"{len(periodos_serie)} período(s) en el rango.")
+else:
+    st.sidebar.caption("El rango no contiene ningún inicio de mes.")
+
+run_serie = st.sidebar.button(
+    "📈 Calcular serie", use_container_width=True, disabled=not periodos_serie)
+
 PARAMS = {
     "PERIODO_CONSIDERADO": periodo_ts,
     "FECHA_PM_TTY_TBX": fecha_pm_ts,
@@ -492,7 +544,7 @@ PARAMS = {
 # Pipeline
 # ===========================================================================
 
-def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
+def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
     mods = _actualizar_config_y_recargar(path, params)
     ctes = mods["ctes_gas"]
     preprocesar_inputs = mods["preprocesamiento"].preprocesar_inputs
@@ -503,7 +555,7 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
     periodo = params["PERIODO_CONSIDERADO"]
     tbx_activa = bool(periodo >= params["FECHA_PM_TTY_TBX"])
 
-    with st.status("Cargando datos de entrada...", expanded=False) as status:
+    with _status("Cargando datos de entrada...", silencioso) as status:
         inyeccion_9300 = load_inyeccion_9300(path)
         coeficientes = load_coeficientes(path)
         retenidos_rtp = load_retenidos_rtp(path)
@@ -514,7 +566,7 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         plantas_yacimientos = load_plantas_yacimientos(path)
         status.update(label="Datos cargados ✅", state="complete")
 
-    with st.status("Normalizando y preprocesando...", expanded=False) as status:
+    with _status("Normalizando y preprocesando...", silencioso) as status:
         inputs = preprocesar_inputs(
             flujos_directos=flujos_directos,
             yacimientos=yacimientos,
@@ -545,7 +597,7 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         status.update(label="Preprocesamiento listo ✅", state="complete")
 
 
-    with st.status("Calculando inyección y tablas totales...", expanded=False) as status:
+    with _status("Calculando inyección y tablas totales...", silencioso) as status:
         inyeccion_std = calcular_inyeccion_std(inyeccion_9300, coeficientes)
         inyeccion = calcular_inyeccion(inyeccion_std, plantas_yacimientos)
         inyeccion_area = calcular_inyeccion_area(inyeccion, matriz_inyecciones)
@@ -598,7 +650,7 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         guardar(tabla_total_flujos_directos, "TBL_TTL_DTOS.csv")
         guardar(tabla_total_detalles_hubs, "TBL_TTL_DH.csv")
 
-    with st.status("Resolviendo la cascada de plantas...", expanded=False) as status:
+    with _status("Resolviendo la cascada de plantas...", silencioso) as status:
         retenidos_TTY_DP = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "Dew point"]
         retenidos_TTY_TBX = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "TBX"]
         retenidos_MEGA = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "TBX MEGA"]
@@ -719,6 +771,118 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
     }
 
 
+# ===========================================================================
+# Serie temporal
+# ===========================================================================
+#
+# El pipeline resuelve UN periodo. Para el tab de graficos se corre una vez por
+# mes y se aplana cada resultado a una fila por (periodo, planta). Todo lo que
+# se quiera graficar tiene que salir de aca: el tab no vuelve a tocar el modelo.
+
+def _a_dict_compuestos(obj) -> dict:
+    """`gas_residual_OUT` -> {compuesto: fraccion}, sin asumir la forma exacta.
+
+    `io_plantas` lo devuelve como Series-por-DataFrame: gas_rico_IN (Series
+    indexada por compuesto) por (1 - retenidos_planta) (DataFrame de una fila),
+    o sea un DataFrame 1xN con los compuestos en columnas. Pero TTY_DP puede
+    re-modelar con retenciones corregidas, asi que se contempla tambien Series
+    y DataFrames de mas de una fila (se suman).
+    """
+    if obj is None:
+        return {}
+
+    if isinstance(obj, pd.DataFrame):
+        if obj.shape[0] > 1 and obj.shape[1] > 1:
+            serie_comp = obj.sum(axis=0)
+        else:
+            serie_comp = obj.squeeze()
+    else:
+        serie_comp = obj
+
+    if not isinstance(serie_comp, pd.Series):
+        return {}
+
+    return {str(k): float(v) for k, v in serie_comp.items()
+            if pd.notna(v)}
+
+
+def _totales_retenidos(retenidos_vol) -> dict:
+    if not isinstance(retenidos_vol, pd.DataFrame):
+        return {}
+    salida = {}
+    for corte in ["etano", "propano", "butanos", "gasolina"]:
+        if corte in retenidos_vol.columns:
+            salida[corte] = float(
+                pd.to_numeric(retenidos_vol[corte], errors="coerce").fillna(0).sum())
+    return salida
+
+
+def _fila_serie(periodo, nombre_planta: str, datos: dict) -> dict:
+    """Aplana el resultado de una planta a una fila. Volumenes ya en MMm3/d."""
+    flujos = datos["flujos"]
+    cap_evac = datos.get("capacidad_evacuacion")
+    lgn = float(flujos["lgn_asignado"])
+
+    fila = {
+        "periodo": pd.Timestamp(periodo).normalize(),
+        "planta": nombre_planta,
+        "activa": bool(flujos.get("activa", True)),
+        "lgn_asignado": lgn,
+        "lgn_unitario": float(flujos["lgn_unitario"]),
+        # lgn_unitario es tn por unidad de Volumen_inyectado; reescalado a
+        # tn/MMm3 es la "riqueza" del pool, que es la que se lee de un vistazo.
+        "lgn_por_mmm3": float(flujos["lgn_unitario"]) * FACTOR_MM,
+        "capacidad_evacuacion": None if cap_evac is None else float(cap_evac),
+        "ocupacion": (lgn / float(cap_evac) * 100.0) if cap_evac else None,
+    }
+
+    for col in ["vol_disponible", "vol_maximo", "vol_asignado",
+                "sobrante", "vol_derivado", "bypass"]:
+        # vol_maximo puede ser inf (planta sin retencion): inf rompe los ejes
+        # de altair y contagia NaN al agregar, asi que se guarda como nulo.
+        valor = _a_mm(flujos[col])
+        fila[col] = None if valor in (float("inf"), float("-inf")) else valor
+
+    for compuesto, valor in _a_dict_compuestos(datos.get("gas_residual_OUT")).items():
+        fila[f"x_{compuesto}"] = valor
+
+    for corte, valor in _totales_retenidos(datos.get("retenidos_vol")).items():
+        fila[f"lgn_{corte}"] = valor
+
+    return fila
+
+
+def ejecutar_serie(path, params, periodos):
+    """Corre el pipeline mes a mes. Devuelve (serie_larga, fallos).
+
+    Un mes que revienta no aborta el barrido: se anota en `fallos` y se sigue.
+    Es habitual que falten datos de inyeccion para algun periodo del rango y no
+    tiene sentido perder los otros 23 por eso.
+    """
+    filas, fallos = [], []
+    barra = st.sidebar.progress(0.0, text="Calculando serie...")
+
+    for i, periodo in enumerate(periodos, start=1):
+        etiqueta = pd.Timestamp(periodo).strftime("%m-%Y")
+        barra.progress(i / len(periodos), text=f"Serie: {etiqueta} ({i}/{len(periodos)})")
+
+        params_periodo = {**params, "PERIODO_CONSIDERADO": pd.Timestamp(periodo)}
+        try:
+            # Sin guardar CSVs: escribiria el mismo archivo una vez por mes y
+            # solo quedaria el ultimo, que es peor que no escribir nada.
+            resultado = ejecutar_pipeline(
+                path, params_periodo, guardar_csvs=False, silencioso=True)
+        except Exception as e:
+            fallos.append((periodo, str(e)))
+            continue
+
+        for nombre_planta, datos in resultado["plantas"].items():
+            filas.append(_fila_serie(periodo, nombre_planta, datos))
+
+    barra.empty()
+    return pd.DataFrame(filas), fallos
+
+
 if run:
     registro = []
     try:
@@ -731,6 +895,29 @@ if run:
         st.exception(e)
     finally:
         st.session_state["diagnostico"] = registro
+
+if run_serie:
+    try:
+        # Los `print` del pipeline se capturan y descartan: multiplicados por N
+        # meses tapan la consola y el diagnostico util es el de la corrida
+        # puntual, que ya se muestra en el tab Resumen.
+        with capturar():
+            serie_df, fallos_serie = ejecutar_serie(input_path, PARAMS, periodos_serie)
+        st.session_state["serie"] = serie_df
+        st.session_state["serie_fallos"] = fallos_serie
+
+        # Si nunca se corrio el pipeline suelto, el resto de los tabs quedarian
+        # vacios aunque la serie este lista. Se siembra con el ultimo periodo.
+        if st.session_state.get("resultados") is None and len(serie_df):
+            st.session_state["resultados"] = ejecutar_pipeline(
+                input_path,
+                {**PARAMS, "PERIODO_CONSIDERADO": pd.Timestamp(periodos_serie[-1])},
+                guardar_csvs=False,
+                silencioso=True,
+            )
+    except Exception as e:
+        st.sidebar.error(f"La serie falló: {e}")
+        st.exception(e)
 
 
 
@@ -748,8 +935,9 @@ plantas = resultados["plantas"]
 flujos_plantas = resultados["flujos_plantas"]
 tbx_en_servicio_res = resultados["tbx_en_servicio"]
 
-tab_resumen, tab_cascada, tab_tablas, tab_red, tab_tbx, tab_dp, tab_mega, tab_sandbox = st.tabs(
-    ["📊 Resumen", "🔗 Cascada", "📋 Tablas totales", "🗺️ Mapa de la red",
+(tab_resumen, tab_graphs, tab_cascada, tab_tablas, tab_red,
+ tab_tbx, tab_dp, tab_mega, tab_sandbox) = st.tabs(
+    ["📊 Resumen", "📈 Graphs", "🔗 Cascada", "📋 Tablas totales", "🗺️ Mapa de la red",
      "TTY - TBX", "TTY - Dew Point", "MEGA", "Plantas (sandbox)"]
 )
 
@@ -808,6 +996,13 @@ with tab_cascada:
         st.caption("Pre-PM: TTY-TBX fuera de servicio, el pool TTY va directo a TTY-DP. "
                    "Valores en MMm3/d.")
     st.graphviz_chart(_dot_cascada(plantas, tbx_en_servicio_res), use_container_width=True)
+
+with tab_graphs:
+    panel_graphs(
+        resultados,
+        serie=st.session_state.get("serie"),
+        fallos=st.session_state.get("serie_fallos"),
+    )
 
 with tab_tablas:
     panel_tablas(resultados)
