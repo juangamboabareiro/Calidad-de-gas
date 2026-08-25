@@ -33,12 +33,13 @@ tab en blanco.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from ui.compat import ancho, arrow_safe
+from ui.compat import ancho
 
 try:
     import pydeck as pdk
@@ -66,41 +67,20 @@ COLOR_TIPO = {
 
 RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 
-# Paleta para el diametro, de menor a mayor. Saturada a proposito: el fondo de
-# concesiones ya es gris, y una paleta apagada encima se pierde.
-PALETA_DIAMETRO = [
-    [  0, 170, 200, 230],   # turquesa
-    [ 60, 140, 255, 235],   # azul
-    [255, 150,   0, 240],   # naranja
-    [225,  30,  60, 245],   # rojo
-]
+# Color unico de las trazas. Se probo colorear por diametro y por empresa con
+# una capa por grupo, y el costo de render no lo justifica: son varias
+# GeoJsonLayer serializandose por separado en cada rerun. El desglose por
+# empresa vive ahora en la tabla de abajo del mapa, que no cuesta nada.
+VERSION = "2026-08-25 · red del sandbox + fragment"
 
-# Grosor en pixeles por tramo, del mas fino al mas grueso.
-ANCHOS_DIAMETRO = [1.2, 2.0, 3.2, 4.6]
-
-# Fuera de este rango es centinela ("sin dato"): la capa trae valores de 9999.
-DIAMETRO_MIN_VALIDO = 0.5
-DIAMETRO_MAX_VALIDO = 60.0
-
-# Paleta categorica para colorear por empresa. Se cicla si hay mas empresas.
-PALETA_EMPRESAS = [
-    [ 31, 119, 180, 230], [255, 127,  14, 230], [ 44, 160,  44, 230],
-    [214,  39,  40, 230], [148, 103, 189, 230], [140,  86,  75, 230],
-    [227, 119, 194, 230], [ 90,  90,  95, 230], [188, 189,  34, 230],
-    [ 23, 190, 207, 230],
-]
+COLOR_DUCTOS = [120, 135, 150, 200]
+ANCHO_DUCTOS = 1.2
 
 COLOR_SIN_DATO = [170, 170, 175, 150]
 
-# Gris de la traza cuando NO se agrupa. Ver `agrupar_ductos`: agrupar significa
-# una capa de deck.gl por grupo, y por empresa eso son docenas. Sin agrupar es
-# una sola capa con un color constante, que es el caso barato.
-COLOR_TRAZA_NEUTRA = [120, 128, 138, 170]
-
-MODO_SIN_COLOR = "Nada (gris)"
-
-# Donde el tab de sandbox deja su red modificada. Si no corriste el sandbox la
-# clave no existe y el mapa se comporta exactamente como antes.
+# Donde el tab "Plantas (sandbox)" deja su red modificada. Si nunca corriste el
+# sandbox la clave no existe y el mapa se comporta exactamente como siempre:
+# ni siquiera dibuja el control.
 CLAVE_RED_SANDBOX = "sandbox_red_gasoductos"
 
 
@@ -243,189 +223,128 @@ def completar_gasoductos(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFra
 
 
 # ===========================================================================
-# Coloreo de las trazas
+# Racconto de ductos
 # ===========================================================================
 
-def _diametros_validos(geojson: dict) -> list[float]:
-    valores = []
+def _largo_km(coords) -> float:
+    """Largo de una polilinea, aproximacion equirectangular. Sobra a esta escala."""
+    total = 0.0
+
+    for (x0, y0), (x1, y1) in zip(coords, coords[1:]):
+        lat_media = math.radians((y0 + y1) / 2)
+        dx = (x1 - x0) * math.cos(lat_media)
+        dy = y1 - y0
+        total += math.hypot(dx, dy)
+
+    return total * 111.32
+
+
+def _lineas_de(geom: dict) -> list:
+    tipo = (geom or {}).get("type")
+
+    if tipo == "LineString":
+        return [geom["coordinates"]]
+    if tipo == "MultiLineString":
+        return geom["coordinates"]
+
+    return []
+
+
+@st.cache_data(show_spinner=False)
+def _resumen_ductos(firma: tuple[str, float]) -> pd.DataFrame:
+    """
+    Tramos, kilometros y diametro por empresa.
+
+    Va cacheado por firma del archivo porque recorre todos los vertices: con
+    3.000 tramos es rapido, pero no hace falta rehacerlo en cada interaccion
+    de la pagina.
+    """
+    ruta = Path(firma[0])
+
+    if not ruta.exists():
+        return pd.DataFrame()
+
+    with open(ruta, encoding="utf-8") as f:
+        geojson = json.load(f)
+
+    filas = []
 
     for feat in geojson.get("features", []):
+        props = feat.get("properties") or {}
+
         try:
-            d = float((feat.get("properties") or {}).get("DIAMETRO"))
+            diametro = float(props.get("DIAMETRO"))
+            if not (0.5 <= diametro <= 60):
+                diametro = None
         except (TypeError, ValueError):
-            continue
-        if DIAMETRO_MIN_VALIDO <= d <= DIAMETRO_MAX_VALIDO:
-            valores.append(d)
+            diametro = None
 
-    return sorted(valores)
-
-
-def cortes_diametro(geojson: dict, n: int = 4) -> list[float]:
-    """
-    Cortes por cuantiles de los diametros presentes, no una escala fija.
-
-    Una escala fija falla en las dos direcciones: si se filtro por
-    --diametro-min 10, todo cae en el tramo mas bajo y el mapa sale de un solo
-    color; si no se filtro nada, todo cae en el mas bajo tambien porque la
-    mediana de la capa es 4 pulgadas. Con cuantiles los colores siempre se
-    reparten, sea cual sea el recorte.
-    """
-    valores = _diametros_validos(geojson)
-
-    if len(valores) < n:
-        return []
-
-    cortes = []
-    for k in range(1, n):
-        corte = valores[int(len(valores) * k / n)]
-        if corte not in cortes:
-            cortes.append(corte)
-
-    return cortes
-
-
-def _fmt_pulgadas(valor: float) -> str:
-    return f"{valor:g}″"
-
-
-def agrupar_ductos(geojson: dict, modo: str) -> list[dict]:
-    """
-    Parte las trazas en grupos, cada uno con su color y grosor.
-
-    Se devuelve un GeoJSON por grupo, en vez de uno solo con el color en las
-    propiedades, para no depender de que pydeck resuelva un accesor anidado
-    (`properties.color`). Si ese accesor no se interpreta, deck.gl cae al color
-    por defecto y sale todo del mismo tono, que es exactamente el sintoma que
-    queremos evitar. Con una capa por grupo el color es una constante.
-
-    No muta el original: `cargar_geojson` esta cacheado. Se comparten las
-    features tal cual, que son de solo lectura.
-
-    Returns
-    -------
-    list[dict]
-        Cada uno con etiqueta, color, ancho y features.
-    """
-    feats = geojson.get("features", [])
-
-    if modo == MODO_SIN_COLOR:
-        # UNA capa con todas las trazas y un color constante. Es la version
-        # liviana: agrupar por empresa puede dar 20-30 capas de deck.gl, cada
-        # una con su GeoJSON serializado aparte, y ahi es donde el mapa se
-        # vuelve pesado. La geometria es la misma; lo que cambia es en cuantos
-        # payloads se manda.
-        return [{
-            "etiqueta": f"trazas ({len(feats)})",
-            "color": COLOR_TRAZA_NEUTRA,
-            "ancho": 1.4,
-            "features": feats,
-        }]
-
-    if modo == "Empresa":
-        grupos: dict[str, list] = {}
-
-        for f in feats:
-            clave = str((f.get("properties") or {}).get("EMPRESA_IN") or "Sin dato")
-            grupos.setdefault(clave, []).append(f)
-
-        # Las empresas con mas tramos primero: asi los colores mas distinguibles
-        # de la paleta caen en lo que mas se ve.
-        orden = sorted(grupos, key=lambda k: -len(grupos[k]))
-
-        return [
-            {
-                "etiqueta": f"{clave} ({len(grupos[clave])})",
-                "color": PALETA_EMPRESAS[i % len(PALETA_EMPRESAS)],
-                "ancho": 1.8,
-                "features": grupos[clave],
-            }
-            for i, clave in enumerate(orden)
-        ]
-
-    # --- por diametro ------------------------------------------------------
-    cortes = cortes_diametro(geojson, n=len(PALETA_DIAMETRO))
-
-    if not cortes:
-        return [{
-            "etiqueta": "trazas",
-            "color": PALETA_DIAMETRO[1],
-            "ancho": 2.0,
-            "features": feats,
-        }]
-
-    baldes = [[] for _ in range(len(cortes) + 1)]
-    sin_dato = []
-
-    for f in feats:
-        try:
-            d = float((f.get("properties") or {}).get("DIAMETRO"))
-        except (TypeError, ValueError):
-            sin_dato.append(f)
-            continue
-
-        if not (DIAMETRO_MIN_VALIDO <= d <= DIAMETRO_MAX_VALIDO):
-            sin_dato.append(f)
-            continue
-
-        indice = sum(1 for c in cortes if d >= c)
-        baldes[indice].append(f)
-
-    etiquetas = []
-    for i in range(len(baldes)):
-        if i == 0:
-            etiquetas.append(f"< {_fmt_pulgadas(cortes[0])}")
-        elif i == len(baldes) - 1:
-            etiquetas.append(f"≥ {_fmt_pulgadas(cortes[-1])}")
-        else:
-            etiquetas.append(
-                f"{_fmt_pulgadas(cortes[i-1])} – {_fmt_pulgadas(cortes[i])}")
-
-    grupos = [
-        {
-            "etiqueta": f"{etiquetas[i]} ({len(baldes[i])})",
-            "color": PALETA_DIAMETRO[min(i, len(PALETA_DIAMETRO) - 1)],
-            "ancho": ANCHOS_DIAMETRO[min(i, len(ANCHOS_DIAMETRO) - 1)],
-            "features": baldes[i],
-        }
-        for i in range(len(baldes)) if baldes[i]
-    ]
-
-    if sin_dato:
-        grupos.append({
-            "etiqueta": f"sin dato ({len(sin_dato)})",
-            "color": COLOR_SIN_DATO,
-            "ancho": 1.0,
-            "features": sin_dato,
+        filas.append({
+            "Empresa": str(props.get("EMPRESA_IN") or "Sin dato"),
+            "km": sum(_largo_km(l) for l in _lineas_de(feat.get("geometry"))),
+            "diametro": diametro,
         })
 
-    return grupos
+    if not filas:
+        return pd.DataFrame()
+
+    detalle = pd.DataFrame(filas)
+
+    resumen = detalle.groupby("Empresa").agg(
+        Tramos=("km", "size"),
+        Km=("km", "sum"),
+        **{"Diám. máx (″)": ("diametro", "max")},
+        **{"Diám. mediano (″)": ("diametro", "median")},
+    ).sort_values("Km", ascending=False)
+
+    resumen["Km"] = resumen["Km"].round(0)
+
+    return resumen.reset_index()
 
 
-def mostrar_leyenda(grupos: list[dict], titulo: str):
-    """Chips de color en una linea. `st.markdown` porque no hay widget nativo."""
-    if not grupos:
-        return
-
-    chips = "".join(
-        f'<span style="display:inline-block;margin:0 14px 4px 0;white-space:nowrap;">'
-        f'<span style="display:inline-block;width:24px;'
-        f'height:{max(2, round(g["ancho"]))}px;'
-        f'background:rgb({g["color"][0]},{g["color"][1]},{g["color"][2]});'
-        f'vertical-align:middle;margin-right:6px;border-radius:2px;"></span>'
-        f'<span style="font-size:0.82rem;color:#444;">{g["etiqueta"]}</span></span>'
-        for g in grupos
-    )
-
-    st.markdown(
-        f'<div style="margin:-6px 0 10px 0;"><span style="font-size:0.78rem;'
-        f'color:#888;margin-right:10px;">{titulo}</span>{chips}</div>',
-        unsafe_allow_html=True,
-    )
+def resumen_ductos(ruta=None) -> pd.DataFrame:
+    return _resumen_ductos(_firma(ruta or RUTA_DUCTOS))
 
 
 # ===========================================================================
 # Posiciones inferidas
 # ===========================================================================
+
+def _separar_coincidentes(coords: dict, nodos: pd.DataFrame, radio: float = 0.12):
+    """
+    Abanica los nodos inferidos que cayeron casi en el mismo punto.
+
+    Varios gasoductos comparten el grueso de sus areas de origen, asi que sus
+    centroides ponderados caen practicamente encimados. Sin esto, todas las
+    lineas convergen a un pixel y las etiquetas se apilan: el efecto "estrella"
+    ilegible. Se los reparte en circulo alrededor del punto comun, lo que no
+    cambia nada del dato (la posicion ya era una aproximacion) y hace legible
+    hacia donde va cada flujo.
+    """
+    inferidos = [k for k in nodos["clave"] if k in coords
+                 and k not in set(nodos.dropna(subset=["lat", "lon"])["clave"])]
+
+    grupos: dict[tuple, list] = {}
+
+    for clave in inferidos:
+        lat, lon = coords[clave]
+        celda = (round(lat / radio), round(lon / radio))
+        grupos.setdefault(celda, []).append(clave)
+
+    for celda, claves in grupos.items():
+        if len(claves) < 2:
+            continue
+
+        lat0 = sum(coords[k][0] for k in claves) / len(claves)
+        lon0 = sum(coords[k][1] for k in claves) / len(claves)
+
+        for i, clave in enumerate(sorted(claves)):
+            angulo = 2 * math.pi * i / len(claves)
+            coords[clave] = (
+                lat0 + radio * math.sin(angulo),
+                lon0 + radio * math.cos(angulo) / math.cos(math.radians(lat0)),
+            )
+
 
 def inferir_posiciones(nodos: pd.DataFrame, edges: pd.DataFrame,
                        max_pasadas: int = 4) -> pd.DataFrame:
@@ -494,6 +413,8 @@ def inferir_posiciones(nodos: pd.DataFrame, edges: pd.DataFrame,
         if not resueltos:
             break
 
+    _separar_coincidentes(coords, salida)
+
     inferidos = salida["posicion"] == ""
 
     salida.loc[inferidos, "lat"] = salida.loc[inferidos, "clave"].map(
@@ -551,7 +472,12 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
     # Ancho por la RAIZ del volumen. En escala lineal hay dos ordenes de
     # magnitud entre el flujo mayor y el menor, y el mayor tapa todo lo demas.
     maximo = float(flujos["valor"].max())
-    flujos["ancho"] = 1.0 + 11.0 * (flujos["valor"] / maximo) ** 0.5
+
+    # Rango chico A PROPOSITO. Aunque se pida width_units="pixels", deck.gl
+    # interpreta el ancho en METROS si esa prop no se aplica, y un valor de 11
+    # se dibuja como una cuna de decenas de kilometros. El clamp de
+    # width_max_pixels de mas abajo es la red de seguridad real.
+    flujos["ancho"] = 0.8 + 4.2 * (flujos["valor"] / maximo) ** 0.5
 
     # Color como COLUMNA del DataFrame: para LineLayer pydeck resuelve nombres
     # de columna sin problema, a diferencia de los accesores anidados sobre
@@ -562,7 +488,7 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
 
     flujos["color"] = flujos["valor"].map(_color)
 
-    flujos["etiqueta"] = (
+    flujos["detalle"] = (
         flujos["origen"].astype(str) + " → " + flujos["destino"].astype(str)
         + "  ·  " + flujos["valor"].map(lambda v: f"{v:,.0f}")
     )
@@ -574,7 +500,7 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
 # Capas
 # ===========================================================================
 
-def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
+def _capas(nodos, flujos, concesiones, ductos, modo_etiquetas,
            tridimensional=False):
     capas = []
 
@@ -590,18 +516,21 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
             pickable=True,
         ))
 
-    # Una capa por grupo, con el color como CONSTANTE. Ver `agrupar_ductos`.
-    for grupo in (ductos or []):
+    if ductos:
         capas.append(pdk.Layer(
             "GeoJsonLayer",
-            data={"type": "FeatureCollection", "features": grupo["features"]},
+            data=ductos,
             stroked=True,
             filled=False,
-            get_line_color=grupo["color"],
+            get_line_color=COLOR_DUCTOS,
             line_width_units="pixels",
-            get_line_width=grupo["ancho"],
-            line_width_min_pixels=grupo["ancho"],
-            pickable=True,
+            get_line_width=ANCHO_DUCTOS,
+            line_width_min_pixels=ANCHO_DUCTOS,
+            line_width_max_pixels=2,
+            # Sin pickable: son 3.000 features y el hit-testing en cada
+            # movimiento del mouse es carisimo. El dato de los ductos esta en
+            # la tabla de abajo.
+            pickable=False,
         ))
 
     if len(flujos):
@@ -616,6 +545,9 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
                 get_source_color=[90, 160, 90, 150],
                 get_target_color=[200, 30, 40, 200],
                 get_width="ancho",
+                width_units="pixels",
+                width_min_pixels=1,
+                width_max_pixels=6,
                 pickable=True,
                 auto_highlight=True,
             ))
@@ -628,6 +560,8 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
                 get_color="color",
                 get_width="ancho",
                 width_units="pixels",
+                width_min_pixels=1,
+                width_max_pixels=6,
                 pickable=True,
                 auto_highlight=True,
             ))
@@ -646,17 +580,32 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
         line_width_min_pixels=1,
     ))
 
-    if mostrar_etiquetas:
-        # Solo plantas y gasoductos: 130 nombres de area encimados no se leen.
+    # Las areas nunca llevan etiqueta: son ~130 nombres y deck.gl no resuelve
+    # colisiones de texto, asi que quedarian todos encimados. Los gasoductos si
+    # se pueden mostrar desde que `_separar_coincidentes` los abanica; antes de
+    # eso caian en el mismo punto y se leian superpuestos.
+    if modo_etiquetas == "Plantas y gasoductos":
+        texto = nodos[nodos["tipo"] != "area"]
+    elif modo_etiquetas == "Plantas":
+        texto = nodos[nodos["tipo"] == "planta"]
+    else:
+        texto = None
+
+    if texto is not None and len(texto):
         capas.append(pdk.Layer(
             "TextLayer",
-            data=nodos[nodos["tipo"] != "area"],
+            data=texto,
             get_position=["lon", "lat"],
             get_text="nombre",
             get_size=13,
-            get_color=[20, 20, 20, 235],
+            get_color=[25, 25, 25, 240],
             get_alignment_baseline="'bottom'",
             get_pixel_offset=[0, -14],
+            # Contorno claro: el texto oscuro sobre una concesion gris o sobre
+            # el fondo negro del basemap se pierde igual de mal en los dos.
+            font_settings={"sdf": True},
+            outline_width=3,
+            outline_color=[255, 255, 255, 220],
         ))
 
     return capas
@@ -676,15 +625,15 @@ def _ayuda_sin_datos(que: str):
 
 
 def _elegir_red(resultados):
-    """Red oficial, o la del sandbox si corriste una intervención sobre ductos.
+    """Red oficial, o la del sandbox si interviniste algun ducto.
 
-    No hace falta darle coordenadas al ducto nuevo: `completar_gasoductos` e
-    `inferir_posiciones` ya lo ubican en el centroide de sus orígenes ponderado
+    No hay que darle coordenadas al ducto nuevo: `completar_gasoductos` e
+    `inferir_posiciones` ya lo ubican en el centroide de sus origenes ponderado
     por volumen, igual que a cualquier otro. Un ducto nuevo entra por el mismo
     camino que VMN.
 
-    Si nunca corriste el sandbox, la clave no existe y esto devuelve la red
-    oficial sin dibujar ningún control: el mapa queda igual que antes.
+    Si nunca corriste el sandbox, la clave no existe en `session_state` y esto
+    devuelve la red oficial sin dibujar ningun control.
     """
     oficial = resultados.get("red_gasoductos")
     sandbox = st.session_state.get(CLAVE_RED_SANDBOX)
@@ -692,10 +641,21 @@ def _elegir_red(resultados):
     if sandbox is None or len(sandbox) == 0:
         return oficial
 
-    nuevos = sorted(set(sandbox["destino"].astype(str))
-                    - set(oficial["destino"].astype(str))) if oficial is not None else []
-    faltan = sorted(set(oficial["destino"].astype(str))
-                    - set(sandbox["destino"].astype(str))) if oficial is not None else []
+    if oficial is not None and "destino" in oficial.columns:
+        destinos_of = set(oficial["destino"].astype(str))
+        destinos_sb = set(sandbox["destino"].astype(str))
+        nuevos = sorted(destinos_sb - destinos_of)
+        faltan = sorted(destinos_of - destinos_sb)
+    else:
+        nuevos, faltan = [], []
+
+    usar = st.checkbox(
+        "Ver la red del sandbox", value=bool(nuevos or faltan),
+        help="Dibuja la red con los ductos que agregaste o sacaste en el tab "
+             "Plantas (sandbox), en vez de la de la corrida oficial.")
+
+    if not usar:
+        return oficial
 
     detalle = []
     if nuevos:
@@ -703,18 +663,8 @@ def _elegir_red(resultados):
     if faltan:
         detalle.append(f"**−{len(faltan)}**: {', '.join(faltan[:3])}")
 
-    usar = st.toggle(
-        "Ver la red del sandbox", value=bool(nuevos or faltan),
-        help="Dibuja la red con los ductos que agregaste o sacaste en el tab "
-             "Plantas (sandbox), en vez de la corrida oficial.")
-
-    if not usar:
-        return oficial
-
-    if detalle:
-        st.caption("Red del sandbox — " + " · ".join(detalle))
-    else:
-        st.caption("Red del sandbox: mismos destinos, volúmenes redistribuidos.")
+    st.caption("Red del sandbox — " + (" · ".join(detalle) if detalle
+               else "mismos destinos, volúmenes redistribuidos."))
 
     return sandbox
 
@@ -722,6 +672,7 @@ def _elegir_red(resultados):
 def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     """Dibuja el tab de red sobre el mapa, con geodata 100% local."""
     st.subheader("Red de gasoductos")
+    st.caption(f"ui/mapa.py · {VERSION}")
 
     if pdk is None:
         st.error("Falta `pydeck`. Instalalo con `pip install pydeck`.")
@@ -788,7 +739,7 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     ductos = cargar_geojson(RUTA_DUCTOS)
 
     # --- controles ---------------------------------------------------------
-    c1, c2, c3, c4 = st.columns([1, 1, 1.4, 1])
+    c1, c2, c3 = st.columns(3)
     with c1:
         ver_conces = st.checkbox("Concesiones", value=concesiones is not None,
                                  disabled=concesiones is None)
@@ -796,23 +747,15 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
         ver_ductos = st.checkbox("Trazas de ductos", value=ductos is not None,
                                  disabled=ductos is None)
     with c3:
-        modo_color = st.selectbox(
-            "Colorear ductos por", [MODO_SIN_COLOR, "Diámetro", "Empresa"],
-            disabled=ductos is None or not ver_ductos,
-            help="Sin colorear, las trazas van en una sola capa gris y el mapa "
-                 "es notablemente más liviano. Agrupar dibuja una capa por "
-                 "grupo: por diámetro son 4 o 5, por empresa pueden ser 30.")
-    with c4:
-        mostrar_etiquetas = st.checkbox("Nombres", value=True)
-
-    grupos_ductos = []
-    if ductos is not None and ver_ductos:
-        grupos_ductos = agrupar_ductos(ductos, modo_color)
+        modo_etiquetas = st.selectbox(
+            "Nombres", ["Plantas y gasoductos", "Plantas", "Ninguno"],
+            help="Las áreas nunca se etiquetan: son ~130 nombres y se pisarían "
+                 "entre sí.")
 
     c1, c2 = st.columns(2)
     with c1:
         solo_plantas = st.checkbox(
-            "Solo flujos que terminan en planta", value=False,
+            "Solo flujos que terminan en planta", value=True,
             help="Filtra las aristas hacia gasoductos finales, que son la mayoría.")
     with c2:
         tridimensional = st.checkbox(
@@ -831,8 +774,8 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             layers=_capas(
                 dibujables, flujos,
                 concesiones if ver_conces else None,
-                grupos_ductos if ver_ductos else None,
-                mostrar_etiquetas,
+                ductos if ver_ductos else None,
+                modo_etiquetas,
                 tridimensional=tridimensional,
             ),
             initial_view_state=pdk.ViewState(
@@ -845,13 +788,12 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             # Sin basemap remoto: el firewall bloquea la salida y ademas el
             # contexto ya lo dan las concesiones.
             map_style=None,
-            tooltip={"text": "{detalle}{etiqueta}{TIPO} {DIAMETRO}″ · {EMPRESA_IN}"},
+            # Un solo campo: si el tooltip nombra claves que la capa no tiene, deck.gl
+            # las imprime literales ("{TIPO}"). Cada capa trae su propio `detalle`.
+            tooltip={"text": "{detalle}"},
         ),
         **ancho(),
     )
-
-    if grupos_ductos and modo_color != MODO_SIN_COLOR:
-        mostrar_leyenda(grupos_ductos, f"Ductos por {modo_color.lower()}:")
 
     # --- pie ---------------------------------------------------------------
     n_inferidos = int((dibujables["posicion"] == "inferida").sum())
@@ -887,9 +829,42 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             st.code("\n".join(faltantes), language="text")
 
     st.caption(
-        "El grosor del arco va con la raíz del volumen inyectado, no con el "
+        "El grosor de la línea va con la raíz del volumen inyectado, no con el "
         "volumen: en escala lineal el flujo más grande tapa a todos los demás."
     )
+
+    if ductos is not None:
+        st.divider()
+        st.markdown("#### Gasoductos por empresa")
+
+        resumen = resumen_ductos()
+
+        if resumen.empty:
+            st.caption("No hay trazas cargadas.")
+        else:
+            izq, der = st.columns([3, 1])
+
+            with izq:
+                st.dataframe(
+                    resumen.style.format({
+                        "Km": "{:,.0f}",
+                        "Diám. máx (″)": "{:,.0f}",
+                        "Diám. mediano (″)": "{:,.1f}",
+                    }),
+                    **ancho(),
+                    hide_index=True,
+                )
+            with der:
+                st.metric("Empresas", len(resumen))
+                st.metric("Tramos", f"{int(resumen['Tramos'].sum()):,}")
+                st.metric("Km totales", f"{resumen['Km'].sum():,.0f}")
+
+            st.caption(
+                "Sobre las trazas que quedaron después del filtro de "
+                "`preparar_geo.py`, no sobre la capa completa. Los kilómetros "
+                "son de la geometría simplificada, así que están subestimados "
+                "en torno al 1%."
+            )
 
 
 # ===========================================================================
@@ -900,8 +875,8 @@ def _envolver_en_fragment(funcion):
     """Envuelve el panel en `st.fragment` si esta version de Streamlit lo tiene.
 
     Sin esto, tocar cualquier checkbox del mapa rerunea el SCRIPT ENTERO: se
-    redibujan los otros siete tabs con sus tablas y su graphviz, ademas del
-    mapa. Con fragment, un toggle solo vuelve a dibujar el mapa.
+    redibujan los otros tabs con sus tablas y su graphviz, ademas del mapa. Con
+    fragment, un toggle solo vuelve a dibujar el mapa.
 
     Se prueban los dos nombres porque `st.fragment` se llamo
     `st.experimental_fragment` entre 1.33 y 1.36, y se verifica que lo devuelto
@@ -922,4 +897,5 @@ def _envolver_en_fragment(funcion):
     return funcion
 
 
+# `app.py` sigue importando `panel_mapa`: la firma publica no cambia.
 panel_mapa = _envolver_en_fragment(_cuerpo_mapa)
