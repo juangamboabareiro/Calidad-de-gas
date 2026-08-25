@@ -722,10 +722,30 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         .abs().max()
     )
 
-    red_gasoductos = pd.DataFrame(columns=["origen", "destino", "valor"])
-    if {"Area", "Gasoducto", "Volumen_inyectado"}.issubset(tabla_total_yacimientos.columns):
-        red_gasoductos = tabla_total_yacimientos[["Area", "Gasoducto", "Volumen_inyectado"]].rename(
-            columns={"Area": "origen", "Gasoducto": "destino", "Volumen_inyectado": "valor"})
+    # La red del mapa son los DOS tramos de la cadena, no solo la primaria.
+    #
+    # Antes salia unicamente de `tabla_total_yacimientos`, o sea aristas
+    # area -> gasoducto. Con eso TTY no aparecia nunca en el mapa: sus origenes
+    # son VMN y VMS, que son gasoductos y viven en flujos directos, asi que no
+    # habia ninguna arista con destino "tty" de donde inferirle una posicion.
+    # MEGA si aparecia, porque tiene areas que le inyectan directo.
+    #
+    # No hay doble conteo: yacimientos aporta area -> gasoducto y flujos
+    # directos aporta gasoducto -> destino. Son tramos distintos de la cadena.
+    _COLS_RED = ["Area", "Gasoducto", "Volumen_inyectado"]
+
+    _tramos = [
+        tabla[_COLS_RED]
+        for tabla in (tabla_total_yacimientos, tabla_total_flujos_directos)
+        if set(_COLS_RED).issubset(tabla.columns)
+    ]
+
+    if _tramos:
+        red_gasoductos = pd.concat(_tramos, ignore_index=True).rename(
+            columns={"Area": "origen", "Gasoducto": "destino",
+                     "Volumen_inyectado": "valor"})
+    else:
+        red_gasoductos = pd.DataFrame(columns=["origen", "destino", "valor"])
 
     plantas = {
         "TTY - TBX": {
