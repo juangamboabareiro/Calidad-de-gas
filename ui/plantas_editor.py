@@ -52,6 +52,24 @@ CLAVE_CROMAS = "cromas_extra_por_planta"
 # la ventaja: volveria a dibujar los otros siete tabs por cada checkbox.
 _SCOPE = "app"
 
+# Mensajes que tienen que sobrevivir a un rerun. Sin esto, un `st.success`
+# seguido de `_rerun()` no se llega a dibujar nunca: el rerun descarta todo lo
+# renderizado y el usuario ve que aprieta el boton y "no pasa nada".
+CLAVE_FLASH = "plantas_flash"
+
+
+def _flash(tipo: str, texto: str):
+    """Deja un mensaje para mostrar DESPUES del rerun."""
+    st.session_state[CLAVE_FLASH] = (tipo, texto)
+
+
+def _mostrar_flash():
+    mensaje = st.session_state.pop(CLAVE_FLASH, None)
+    if not mensaje:
+        return
+    tipo, texto = mensaje
+    getattr(st, tipo, st.info)(texto)
+
 
 def configurar_scope(scope: str):
     """La llama el tab para avisar que estamos adentro de un fragment."""
@@ -135,6 +153,8 @@ def panel_plantas(retenidos_rtp, compuestos, config, tbx_en_servicio: bool,
     registro = obtener_registro()
 
     st.markdown("### 🏭 Plantas y conexiones")
+
+    _mostrar_flash()
 
     _bloque_alta(registro, compuestos)
     _bloque_cromas(compuestos, factor_mm)
@@ -238,32 +258,44 @@ def _bloque_escenarios(registro):
             label_visibility="collapsed")
         if col_b.button("Cargar", use_container_width=True, key="btn_esc_load"):
             import json as _json
-            try:
-                with open(disponibles[elegido], encoding="utf-8") as fh:
-                    nuevas, parcheadas = aplicar_escenario(registro, _json.load(fh))
-                # Las cromas del escenario vienen adentro de cada planta. Hay que
-                # limpiar el buffer del uploader: si no, `_aplicar_cromas` se las
-                # pisa con una lista vacia en el proximo rerun.
-                st.session_state[CLAVE_CROMAS] = {}
-                st.success(
-                    f"**{elegido}**: {nuevas} planta(s) cargada(s)"
-                    + (f", {parcheadas} conexión(es) enganchada(s)." if parcheadas else "."))
-                _rerun()
-            except Exception as e:
-                st.error(f"No se pudo cargar: {e}")
+            with st.status(f"Aplicando **{elegido}**…", expanded=False) as estado:
+                try:
+                    with open(disponibles[elegido], encoding="utf-8") as fh:
+                        nuevas, parcheadas = aplicar_escenario(registro, _json.load(fh))
+                    # Las cromas del escenario vienen adentro de cada planta. Hay
+                    # que limpiar el buffer del uploader: si no, `_aplicar_cromas`
+                    # se las pisa con una lista vacia en el proximo rerun.
+                    st.session_state[CLAVE_CROMAS] = {}
+                except Exception as e:
+                    estado.update(label="No se pudo cargar", state="error")
+                    st.error(f"{type(e).__name__}: {e}")
+                else:
+                    estado.update(label="Escenario aplicado ✅", state="complete")
+                    _flash("success", _resumen_escenario(elegido, nuevas, parcheadas))
+                    _rerun()
 
     subido = st.file_uploader(
         "…o subí un escenario (.json)", type=["json"], key="esc_up")
     if subido is not None and st.button(
-            "Aplicar escenario subido", use_container_width=True, key="btn_esc_up"):
+            f"Aplicar «{subido.name}»", use_container_width=True, key="btn_esc_up"):
         import json as _json
-        try:
-            datos = _json.loads(subido.getvalue().decode("utf-8"))
-            aplicar_escenario(registro, datos)
-            st.session_state[CLAVE_CROMAS] = {}
-            _rerun()
-        except Exception as e:
-            st.error(f"El archivo no es un escenario válido: {e}")
+        with st.status(f"Aplicando **{subido.name}**…", expanded=False) as estado:
+            try:
+                datos = _json.loads(subido.getvalue().decode("utf-8"))
+                if not isinstance(datos, list):
+                    raise ValueError(
+                        "El JSON tiene que ser una lista de plantas, no "
+                        f"un {type(datos).__name__}.")
+                nuevas, parcheadas = aplicar_escenario(registro, datos)
+                st.session_state[CLAVE_CROMAS] = {}
+            except Exception as e:
+                estado.update(label="El archivo no es un escenario válido",
+                              state="error")
+                st.error(f"{type(e).__name__}: {e}")
+            else:
+                estado.update(label="Escenario aplicado ✅", state="complete")
+                _flash("success", _resumen_escenario(subido.name, nuevas, parcheadas))
+                _rerun()
 
     col_e, col_f = st.columns(2)
     if col_e.button("💾 Guardar", use_container_width=True, key="btn_guardar_reg"):
@@ -309,6 +341,19 @@ def aplicar_escenario(registro: dict, datos: list) -> tuple[int, int]:
         nuevas += 1
 
     return nuevas, parcheadas
+
+
+def _resumen_escenario(nombre, nuevas, parcheadas) -> str:
+    """Texto del flash. Dice QUE cambio, no solo que salio bien: el usuario
+    tiene que poder verificar que el escenario hizo lo que esperaba."""
+    partes = []
+    if nuevas:
+        partes.append(f"{nuevas} planta(s) cargada(s)")
+    if parcheadas:
+        partes.append(f"{parcheadas} conexión(es) enganchada(s)")
+    detalle = " y ".join(partes) if partes else "sin cambios"
+    return (f"**{nombre}** aplicado: {detalle}. "
+            "Revisá las capacidades y dale a **Resolver cascada**.")
 
 
 def _escenarios_disponibles() -> dict:

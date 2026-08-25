@@ -754,9 +754,17 @@ tab_resumen, tab_cascada, tab_tablas, tab_red, tab_tbx, tab_dp, tab_mega, tab_sa
 )
 
 with tab_resumen:
-    st.subheader("Calidad de los datos de entrada")
-    mostrar_diagnostico(st.session_state.get("diagnostico", []))
-    st.divider()
+    # Las observaciones del pipeline van plegadas: en una corrida limpia no
+    # aportan nada y empujan hacia abajo lo que sí se mira siempre (el balance
+    # y los KPI). El contador en el título deja ver si hay algo sin abrirlo.
+    _obs = st.session_state.get("diagnostico", [])
+    with st.expander(
+        f"🔍 Calidad de los datos de entrada — {len(_obs)} observación(es)"
+        if _obs else "🔍 Calidad de los datos de entrada — sin observaciones",
+        expanded=False,
+    ):
+        mostrar_diagnostico(_obs)
+
     desvio = resultados["desvio_balance"]
     if desvio < 1e-6:
         st.success(f"Balance por eslabón cerrado (desvío máx. {desvio:.2e}).")
