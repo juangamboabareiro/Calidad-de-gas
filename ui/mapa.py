@@ -301,6 +301,42 @@ def resumen_ductos(ruta=None) -> pd.DataFrame:
 # Posiciones inferidas
 # ===========================================================================
 
+def _separar_coincidentes(coords: dict, nodos: pd.DataFrame, radio: float = 0.12):
+    """
+    Abanica los nodos inferidos que cayeron casi en el mismo punto.
+
+    Varios gasoductos comparten el grueso de sus areas de origen, asi que sus
+    centroides ponderados caen practicamente encimados. Sin esto, todas las
+    lineas convergen a un pixel y las etiquetas se apilan: el efecto "estrella"
+    ilegible. Se los reparte en circulo alrededor del punto comun, lo que no
+    cambia nada del dato (la posicion ya era una aproximacion) y hace legible
+    hacia donde va cada flujo.
+    """
+    inferidos = [k for k in nodos["clave"] if k in coords
+                 and k not in set(nodos.dropna(subset=["lat", "lon"])["clave"])]
+
+    grupos: dict[tuple, list] = {}
+
+    for clave in inferidos:
+        lat, lon = coords[clave]
+        celda = (round(lat / radio), round(lon / radio))
+        grupos.setdefault(celda, []).append(clave)
+
+    for celda, claves in grupos.items():
+        if len(claves) < 2:
+            continue
+
+        lat0 = sum(coords[k][0] for k in claves) / len(claves)
+        lon0 = sum(coords[k][1] for k in claves) / len(claves)
+
+        for i, clave in enumerate(sorted(claves)):
+            angulo = 2 * math.pi * i / len(claves)
+            coords[clave] = (
+                lat0 + radio * math.sin(angulo),
+                lon0 + radio * math.cos(angulo) / math.cos(math.radians(lat0)),
+            )
+
+
 def inferir_posiciones(nodos: pd.DataFrame, edges: pd.DataFrame,
                        max_pasadas: int = 4) -> pd.DataFrame:
     """
@@ -368,6 +404,8 @@ def inferir_posiciones(nodos: pd.DataFrame, edges: pd.DataFrame,
         if not resueltos:
             break
 
+    _separar_coincidentes(coords, salida)
+
     inferidos = salida["posicion"] == ""
 
     salida.loc[inferidos, "lat"] = salida.loc[inferidos, "clave"].map(
@@ -425,7 +463,12 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
     # Ancho por la RAIZ del volumen. En escala lineal hay dos ordenes de
     # magnitud entre el flujo mayor y el menor, y el mayor tapa todo lo demas.
     maximo = float(flujos["valor"].max())
-    flujos["ancho"] = 1.0 + 11.0 * (flujos["valor"] / maximo) ** 0.5
+
+    # Rango chico A PROPOSITO. Aunque se pida width_units="pixels", deck.gl
+    # interpreta el ancho en METROS si esa prop no se aplica, y un valor de 11
+    # se dibuja como una cuna de decenas de kilometros. El clamp de
+    # width_max_pixels de mas abajo es la red de seguridad real.
+    flujos["ancho"] = 0.8 + 4.2 * (flujos["valor"] / maximo) ** 0.5
 
     # Color como COLUMNA del DataFrame: para LineLayer pydeck resuelve nombres
     # de columna sin problema, a diferencia de los accesores anidados sobre
@@ -436,7 +479,7 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
 
     flujos["color"] = flujos["valor"].map(_color)
 
-    flujos["etiqueta"] = (
+    flujos["detalle"] = (
         flujos["origen"].astype(str) + " → " + flujos["destino"].astype(str)
         + "  ·  " + flujos["valor"].map(lambda v: f"{v:,.0f}")
     )
@@ -474,7 +517,11 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
             line_width_units="pixels",
             get_line_width=ANCHO_DUCTOS,
             line_width_min_pixels=ANCHO_DUCTOS,
-            pickable=True,
+            line_width_max_pixels=2,
+            # Sin pickable: son 3.000 features y el hit-testing en cada
+            # movimiento del mouse es carisimo. El dato de los ductos esta en
+            # la tabla de abajo.
+            pickable=False,
         ))
 
     if len(flujos):
@@ -489,6 +536,9 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
                 get_source_color=[90, 160, 90, 150],
                 get_target_color=[200, 30, 40, 200],
                 get_width="ancho",
+                width_units="pixels",
+                width_min_pixels=1,
+                width_max_pixels=6,
                 pickable=True,
                 auto_highlight=True,
             ))
@@ -501,6 +551,8 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
                 get_color="color",
                 get_width="ancho",
                 width_units="pixels",
+                width_min_pixels=1,
+                width_max_pixels=6,
                 pickable=True,
                 auto_highlight=True,
             ))
@@ -520,10 +572,13 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
     ))
 
     if mostrar_etiquetas:
-        # Solo plantas y gasoductos: 130 nombres de area encimados no se leen.
+        # Solo PLANTAS. Los gasoductos comparten posicion inferida cerca del
+        # centro de gravedad de sus areas, asi que sus etiquetas se apilan una
+        # encima de otra y no se lee ninguna. deck.gl no resuelve colisiones de
+        # texto por defecto.
         capas.append(pdk.Layer(
             "TextLayer",
-            data=nodos[nodos["tipo"] != "area"],
+            data=nodos[nodos["tipo"] == "planta"],
             get_position=["lon", "lat"],
             get_text="nombre",
             get_size=13,
@@ -630,7 +685,7 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     c1, c2 = st.columns(2)
     with c1:
         solo_plantas = st.checkbox(
-            "Solo flujos que terminan en planta", value=False,
+            "Solo flujos que terminan en planta", value=True,
             help="Filtra las aristas hacia gasoductos finales, que son la mayoría.")
     with c2:
         tridimensional = st.checkbox(
@@ -663,7 +718,9 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
             # Sin basemap remoto: el firewall bloquea la salida y ademas el
             # contexto ya lo dan las concesiones.
             map_style=None,
-            tooltip={"text": "{detalle}{etiqueta}{TIPO} {DIAMETRO}″ · {EMPRESA_IN}"},
+            # Un solo campo: si el tooltip nombra claves que la capa no tiene, deck.gl
+            # las imprime literales ("{TIPO}"). Cada capa trae su propio `detalle`.
+            tooltip={"text": "{detalle}"},
         ),
         use_container_width=True,
     )
