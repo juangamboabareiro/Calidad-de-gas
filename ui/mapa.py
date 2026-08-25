@@ -69,6 +69,8 @@ RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 # una capa por grupo, y el costo de render no lo justifica: son varias
 # GeoJsonLayer serializandose por separado en cada rerun. El desglose por
 # empresa vive ahora en la tabla de abajo del mapa, que no cuesta nada.
+VERSION = "2026-08-24b · selector de etiquetas"
+
 COLOR_DUCTOS = [120, 135, 150, 200]
 ANCHO_DUCTOS = 1.2
 
@@ -491,7 +493,7 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
 # Capas
 # ===========================================================================
 
-def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
+def _capas(nodos, flujos, concesiones, ductos, modo_etiquetas,
            tridimensional=False):
     capas = []
 
@@ -571,20 +573,32 @@ def _capas(nodos, flujos, concesiones, ductos, mostrar_etiquetas,
         line_width_min_pixels=1,
     ))
 
-    if mostrar_etiquetas:
-        # Solo PLANTAS. Los gasoductos comparten posicion inferida cerca del
-        # centro de gravedad de sus areas, asi que sus etiquetas se apilan una
-        # encima de otra y no se lee ninguna. deck.gl no resuelve colisiones de
-        # texto por defecto.
+    # Las areas nunca llevan etiqueta: son ~130 nombres y deck.gl no resuelve
+    # colisiones de texto, asi que quedarian todos encimados. Los gasoductos si
+    # se pueden mostrar desde que `_separar_coincidentes` los abanica; antes de
+    # eso caian en el mismo punto y se leian superpuestos.
+    if modo_etiquetas == "Plantas y gasoductos":
+        texto = nodos[nodos["tipo"] != "area"]
+    elif modo_etiquetas == "Plantas":
+        texto = nodos[nodos["tipo"] == "planta"]
+    else:
+        texto = None
+
+    if texto is not None and len(texto):
         capas.append(pdk.Layer(
             "TextLayer",
-            data=nodos[nodos["tipo"] == "planta"],
+            data=texto,
             get_position=["lon", "lat"],
             get_text="nombre",
             get_size=13,
-            get_color=[20, 20, 20, 235],
+            get_color=[25, 25, 25, 240],
             get_alignment_baseline="'bottom'",
             get_pixel_offset=[0, -14],
+            # Contorno claro: el texto oscuro sobre una concesion gris o sobre
+            # el fondo negro del basemap se pierde igual de mal en los dos.
+            font_settings={"sdf": True},
+            outline_width=3,
+            outline_color=[255, 255, 255, 220],
         ))
 
     return capas
@@ -606,6 +620,7 @@ def _ayuda_sin_datos(que: str):
 def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     """Dibuja el tab de red sobre el mapa, con geodata 100% local."""
     st.subheader("Red de gasoductos")
+    st.caption(f"ui/mapa.py · {VERSION}")
 
     if pdk is None:
         st.error("Falta `pydeck`. Instalalo con `pip install pydeck`.")
@@ -680,7 +695,10 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
         ver_ductos = st.checkbox("Trazas de ductos", value=ductos is not None,
                                  disabled=ductos is None)
     with c3:
-        mostrar_etiquetas = st.checkbox("Nombres", value=True)
+        modo_etiquetas = st.selectbox(
+            "Nombres", ["Plantas y gasoductos", "Plantas", "Ninguno"],
+            help="Las áreas nunca se etiquetan: son ~130 nombres y se pisarían "
+                 "entre sí.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -705,7 +723,7 @@ def panel_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
                 dibujables, flujos,
                 concesiones if ver_conces else None,
                 ductos if ver_ductos else None,
-                mostrar_etiquetas,
+                modo_etiquetas,
                 tridimensional=tridimensional,
             ),
             initial_view_state=pdk.ViewState(
