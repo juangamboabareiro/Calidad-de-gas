@@ -36,6 +36,8 @@ Las dos primeras son una linea cada una en `ejecutar_pipeline`.
 import pandas as pd
 import streamlit as st
 
+from ui.compat import ancho, arrow_safe
+
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
 from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
 # El sub-panel de gasoductos se importa de forma tolerante A PROPOSITO.
@@ -223,7 +225,7 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
 
     st.divider()
     correr = st.button(
-        "▶️ Resolver cascada", type="primary", use_container_width=True,
+        "▶️ Resolver cascada", type="primary", **ancho(),
         disabled=bool(errores), key="btn_correr_sandbox")
 
     if errores:
@@ -303,12 +305,12 @@ def _bloque_ductos(informe, factor_mm):
         return
 
     with st.expander(f"🛢️ {len(tabla)} intervención(es) sobre los ductos", expanded=True):
-        vista = tabla.copy()
+        vista = arrow_safe(tabla.copy())
         if "Volumen" in vista.columns:
-            vista["Volumen"] = vista["Volumen"] / factor_mm
+            vista["Volumen"] = pd.to_numeric(vista["Volumen"], errors="coerce") / factor_mm
         st.dataframe(
             vista.style.format({"Volumen": "{:,.2f}"}),
-            use_container_width=True, hide_index=True)
+            **ancho(), hide_index=True)
         st.caption(
             "Volúmenes en MMm3/d. El total que inyecta cada área no cambia: "
             "sólo se redistribuye entre destinos.")
@@ -367,7 +369,7 @@ def _bloque_impacto(flujos_sandbox, flujos_produccion, factor_mm):
                 "Gas tratado antes": "{:,.2f}", "Gas tratado después": "{:,.2f}",
                 "Δ": "{:+,.2f}", "LGN Δ": "{:+,.1f}",
             }),
-            use_container_width=True, hide_index=True)
+            **ancho(), hide_index=True)
         st.caption(
             "Gas en MMm3/d, LGN en tn/d. Δ es contra la corrida oficial. "
             "Las plantas que no cambiaron no se listan.")
@@ -429,7 +431,7 @@ def _bloque_control(flujos_sandbox, flujos_produccion, factor_mm):
             vista = delta.copy()
             for c in [x for x in COLUMNAS_VOLUMEN if x in vista.columns]:
                 vista[c] = vista[c] / factor_mm
-            st.dataframe(vista.style.format("{:,.6f}"), use_container_width=True)
+            st.dataframe(vista.style.format("{:,.6f}"), **ancho())
 
 
 def _bloque_balance(flujos):
@@ -460,7 +462,7 @@ def _bloque_flujos(flujos, factor_mm):
             **{c: "{:,.2f}" for c in COLUMNAS_VOLUMEN if c in vista.columns},
             "lgn_unitario": "{:,.5f}", "lgn_asignado": "{:,.1f}",
         }),
-        use_container_width=True,
+        **ancho(),
     )
 
     csv = flujos.reset_index(names="Planta").to_csv(index=False).encode("utf-8")
@@ -475,7 +477,7 @@ def _bloque_grafo(registro, plantas, factor_mm):
         "composición). Línea fina = mismo pool, sólo pasa volumen. "
         "Punteado = bypass. Valores en MMm3/d.")
     st.graphviz_chart(dot_cascada(registro, plantas, factor_mm),
-                      use_container_width=True)
+                      **ancho())
 
 
 def _bloque_kpis(plantas, factor_mm):
@@ -522,4 +524,7 @@ def _bloque_kpis(plantas, factor_mm):
                 st.caption(
                     "`Volumen_pool` es el gas del pool antes del reparto; "
                     "`Volumen_inyectado` es la porción asignada a esta planta.")
-                st.dataframe(datos["tabla_total"], use_container_width=True)
+                # `arrow_safe`: esta tabla viene del pipeline con `fillna(0)`,
+                # asi que `Gasoducto` mezcla ceros (int) con nombres (str) y
+                # pyarrow deja un traceback en el log por cada render.
+                st.dataframe(arrow_safe(datos["tabla_total"]), **ancho())

@@ -16,6 +16,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ui.compat import ancho, arrow_safe
+
 from pipeline.gasoductos.intervenciones import (
     Intervencion,
     areas_disponibles,
@@ -148,7 +150,7 @@ def _bloque_alta(yac, fdi, compuestos, intervenciones, factor_mm):
                                     for c in list(cromato.index)[:6]) + " …")
 
         if st.button("Abrir gasoducto", type="primary",
-                     use_container_width=True, key="gd_btn_alta"):
+                     **ancho(), key="gd_btn_alta"):
             nombre = (nombre or "").strip()
             if not nombre:
                 st.error("Poné un nombre para el gasoducto.")
@@ -209,11 +211,11 @@ def _previsualizar(area, reparto, total, volumen, nombre, factor_mm):
         f"El área sigue inyectando **{total / factor_mm:,.2f} MMm3/d**.")
 
     st.dataframe(
-        tabla.style.format({
+        arrow_safe(tabla).style.format({
             "Ahora": "{:,.2f}", "Después": "{:,.2f}",
             "Δ": "{:+,.2f}", "% del área": "{:,.1f}%",
         }),
-        use_container_width=True, hide_index=True)
+        **ancho(), hide_index=True)
 
     # El total tiene que cerrar. Si no cierra hay un bug, y es mejor verlo acá
     # que descubrirlo comparando plantas tres pasos después.
@@ -266,7 +268,7 @@ def _bloque_baja(yac, fdi, intervenciones, factor_mm):
                 + ", ".join(f"{a} ({v / factor_mm:,.2f})" for a, v in sin_salida[:5])
                 + (" …" if len(sin_salida) > 5 else ""))
 
-        if col_b.button("Sacar de servicio", use_container_width=True,
+        if col_b.button("Sacar de servicio", **ancho(),
                         key="gd_btn_baja"):
             intervenciones.append(Intervencion(tipo="baja", nombre=ducto))
             _flash("success",

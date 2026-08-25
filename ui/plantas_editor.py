@@ -30,6 +30,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ui.compat import ancho, arrow_safe
+
 from pipeline.plantas.registro import (
     PRESETS,
     PlantaConfig,
@@ -202,7 +204,7 @@ def _bloque_alta(registro, compuestos):
                  "poné el de otra planta si son dos trenes sobre el mismo gas "
                  "(el caso TTY-TBX / TTY-Dew Point).")
 
-        if col_b.button("Crear", use_container_width=True, key="btn_crear"):
+        if col_b.button("Crear", **ancho(), key="btn_crear"):
             nombre = (nombre or "").strip()
             if not nombre:
                 st.error("Poné un nombre.")
@@ -227,7 +229,7 @@ def _bloque_alta(registro, compuestos):
         if borrables:
             col_c, col_d = st.columns([2, 1])
             a_borrar = col_c.selectbox("Eliminar", borrables, key="borrar_sel")
-            if col_d.button("Eliminar", use_container_width=True, key="btn_borrar"):
+            if col_d.button("Eliminar", **ancho(), key="btn_borrar"):
                 # Hay que limpiar las conexiones que apuntaban a la planta
                 # borrada, si no el registro queda con un destino fantasma y la
                 # validacion lo marca como error.
@@ -284,7 +286,7 @@ def _bloque_escenarios(registro):
         elegido = col_a.selectbox(
             "Escenario prearmado", list(disponibles), key="esc_sel",
             label_visibility="collapsed")
-        if col_b.button("Cargar", use_container_width=True, key="btn_esc_load"):
+        if col_b.button("Cargar", **ancho(), key="btn_esc_load"):
             with st.status(f"Aplicando **{elegido}**…", expanded=False) as estado:
                 try:
                     with open(disponibles[elegido], encoding="utf-8") as fh:
@@ -299,7 +301,7 @@ def _bloque_escenarios(registro):
     subido = st.file_uploader(
         "…o subí un escenario (.json)", type=["json"], key="esc_up")
     if subido is not None and st.button(
-            f"Aplicar «{subido.name}»", use_container_width=True, key="btn_esc_up"):
+            f"Aplicar «{subido.name}»", **ancho(), key="btn_esc_up"):
         with st.status(f"Aplicando **{subido.name}**…", expanded=False) as estado:
             try:
                 _aplicar(_json.loads(subido.getvalue().decode("utf-8")), subido.name)
@@ -312,12 +314,12 @@ def _bloque_escenarios(registro):
                 _rerun()
 
     col_e, col_f = st.columns(2)
-    if col_e.button("💾 Guardar", use_container_width=True, key="btn_guardar_reg"):
+    if col_e.button("💾 Guardar", **ancho(), key="btn_guardar_reg"):
         ruta = guardar_registro(registro)
         st.success(f"Plantas guardadas en `{ruta}`.")
 
     col_f.download_button(
-        "⬇️ Descargar", use_container_width=True, key="btn_desc_reg",
+        "⬇️ Descargar", **ancho(), key="btn_desc_reg",
         data=serializar(registro, obtener_intervenciones()).encode("utf-8"),
         file_name="escenario.json", mime="application/json",
         help="Plantas y gasoductos juntos.")
@@ -390,7 +392,7 @@ def _bloque_cromas(compuestos, factor_mm):
                 st.dataframe(
                     resumen_cromas(cromas, factor_mm).style.format({
                         "Volumen [MMm3/d]": "{:,.2f}", "Suma molar": "{:,.4f}"}),
-                    use_container_width=True, hide_index=True)
+                    **ancho(), hide_index=True)
 
         if st.session_state.get(CLAVE_CROMAS) and st.button(
                 "Descartar cromatografías cargadas", key="btn_limpiar_cromas"):
@@ -476,7 +478,7 @@ def _bloque_retenidos(planta: PlantaConfig, compuestos):
         })
 
         editado = st.data_editor(
-            editable, hide_index=True, use_container_width=True,
+            editable, hide_index=True, **ancho(),
             key=f"ret_{planta.nombre}",
             column_config={
                 "Compuesto": st.column_config.TextColumn(disabled=True),
@@ -548,7 +550,7 @@ def _bloque_conexiones(planta: PlantaConfig, registro, factor_mm):
             })
 
         editado = st.data_editor(
-            pd.DataFrame(filas), hide_index=True, use_container_width=True,
+            pd.DataFrame(filas), hide_index=True, **ancho(),
             key=f"con_{planta.nombre}", disabled=not planta.deriva,
             column_config={
                 "Destino": st.column_config.TextColumn(disabled=True),
