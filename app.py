@@ -699,9 +699,6 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         },
     }
 
-    resultados["comunes"] = comunes
-    resultados["retenidos_rtp"] = retenidos_rtp
-
     return {
         "tablas": {
             "Total Yacimientos": tabla_total_yacimientos,
@@ -713,6 +710,12 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         "desvio_balance": desvio_balance,
         "tbx_en_servicio": tbx_activa,
         "red_gasoductos": red_gasoductos,
+
+        # Para el tab "Plantas (sandbox)". `comunes` son los mismos seis inputs
+        # que ya reciben modelar_TTY y modelar_MEGA; `retenidos_rtp` es para
+        # sembrar la retencion de las tres plantas base.
+        "comunes": comunes,
+        "retenidos_rtp": retenidos_rtp,
     }
 
 
