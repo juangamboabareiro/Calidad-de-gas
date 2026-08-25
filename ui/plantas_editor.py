@@ -242,13 +242,41 @@ def _bloque_alta(registro, compuestos):
 
 
 def _bloque_escenarios(registro):
-    """Cargar y guardar escenarios enteros.
+    """Cargar y guardar escenarios enteros: plantas Y gasoductos.
 
     Armar una planta a mano son ~20 interacciones, y cada una es un rerun. Un
-    escenario prearmado la deja lista de un click, con cromatografias incluidas.
+    escenario prearmado la deja lista de un click, con cromatografias y con las
+    intervenciones sobre ductos incluidas.
     """
+    import json as _json
+
+    from ui.escenarios import serializar, partir, resumen as resumen_escenario
+    from ui.gasoductos_editor import obtener_intervenciones
+    from pipeline.gasoductos.intervenciones import Intervencion
+
     st.divider()
-    st.caption("**Escenarios**")
+    st.caption("**Escenarios** — incluyen plantas y gasoductos")
+
+    def _aplicar(datos, etiqueta):
+        plantas_json, ductos_json = partir(datos)
+
+        nuevas, parcheadas = aplicar_escenario(registro, plantas_json)
+
+        # Las intervenciones se REEMPLAZAN enteras: son una lista ordenada y no
+        # hay clave por la cual identificar "la misma" intervencion en dos
+        # escenarios distintos. Mezclarlas no tiene un significado claro.
+        intervenciones = obtener_intervenciones()
+        intervenciones.clear()
+        intervenciones.extend(Intervencion.desde_dict(d) for d in ductos_json)
+
+        # Las cromas del escenario vienen adentro de cada planta. Hay que
+        # limpiar el buffer del uploader: si no, `_aplicar_cromas` se las pisa
+        # con una lista vacia en el proximo rerun.
+        st.session_state[CLAVE_CROMAS] = {}
+
+        _flash("success",
+               f"**{etiqueta}**: {resumen_escenario(plantas_json, ductos_json)}. "
+               "Dale a **Resolver cascada**.")
 
     disponibles = _escenarios_disponibles()
     if disponibles:
@@ -257,61 +285,46 @@ def _bloque_escenarios(registro):
             "Escenario prearmado", list(disponibles), key="esc_sel",
             label_visibility="collapsed")
         if col_b.button("Cargar", use_container_width=True, key="btn_esc_load"):
-            import json as _json
             with st.status(f"Aplicando **{elegido}**…", expanded=False) as estado:
                 try:
                     with open(disponibles[elegido], encoding="utf-8") as fh:
-                        nuevas, parcheadas = aplicar_escenario(registro, _json.load(fh))
-                    # Las cromas del escenario vienen adentro de cada planta. Hay
-                    # que limpiar el buffer del uploader: si no, `_aplicar_cromas`
-                    # se las pisa con una lista vacia en el proximo rerun.
-                    st.session_state[CLAVE_CROMAS] = {}
+                        _aplicar(_json.load(fh), elegido)
                 except Exception as e:
                     estado.update(label="No se pudo cargar", state="error")
                     st.error(f"{type(e).__name__}: {e}")
                 else:
                     estado.update(label="Escenario aplicado ✅", state="complete")
-                    _flash("success", _resumen_escenario(elegido, nuevas, parcheadas))
                     _rerun()
 
     subido = st.file_uploader(
         "…o subí un escenario (.json)", type=["json"], key="esc_up")
     if subido is not None and st.button(
             f"Aplicar «{subido.name}»", use_container_width=True, key="btn_esc_up"):
-        import json as _json
         with st.status(f"Aplicando **{subido.name}**…", expanded=False) as estado:
             try:
-                datos = _json.loads(subido.getvalue().decode("utf-8"))
-                if not isinstance(datos, list):
-                    raise ValueError(
-                        "El JSON tiene que ser una lista de plantas, no "
-                        f"un {type(datos).__name__}.")
-                nuevas, parcheadas = aplicar_escenario(registro, datos)
-                st.session_state[CLAVE_CROMAS] = {}
+                _aplicar(_json.loads(subido.getvalue().decode("utf-8")), subido.name)
             except Exception as e:
                 estado.update(label="El archivo no es un escenario válido",
                               state="error")
                 st.error(f"{type(e).__name__}: {e}")
             else:
                 estado.update(label="Escenario aplicado ✅", state="complete")
-                _flash("success", _resumen_escenario(subido.name, nuevas, parcheadas))
                 _rerun()
 
     col_e, col_f = st.columns(2)
     if col_e.button("💾 Guardar", use_container_width=True, key="btn_guardar_reg"):
         ruta = guardar_registro(registro)
-        st.success(f"Guardado en `{ruta}`.")
+        st.success(f"Plantas guardadas en `{ruta}`.")
 
-    import json as _json
     col_f.download_button(
         "⬇️ Descargar", use_container_width=True, key="btn_desc_reg",
-        data=_json.dumps([p.a_dict() for p in registro.values()],
-                         indent=2, ensure_ascii=False).encode("utf-8"),
-        file_name="escenario_plantas.json", mime="application/json")
+        data=serializar(registro, obtener_intervenciones()).encode("utf-8"),
+        file_name="escenario.json", mime="application/json",
+        help="Plantas y gasoductos juntos.")
 
 
 def aplicar_escenario(registro: dict, datos: list) -> tuple[int, int]:
-    """Mezcla un escenario sobre el registro actual. Devuelve (nuevas, parcheadas).
+    """Mezcla las plantas de un escenario sobre el registro. Devuelve (nuevas, parcheadas).
 
     MERGE, no reemplazo. Si reemplazara, cargar un escenario con una sola planta
     se llevaria puestas las tres base, que se siembran desde los parametros de
@@ -341,19 +354,6 @@ def aplicar_escenario(registro: dict, datos: list) -> tuple[int, int]:
         nuevas += 1
 
     return nuevas, parcheadas
-
-
-def _resumen_escenario(nombre, nuevas, parcheadas) -> str:
-    """Texto del flash. Dice QUE cambio, no solo que salio bien: el usuario
-    tiene que poder verificar que el escenario hizo lo que esperaba."""
-    partes = []
-    if nuevas:
-        partes.append(f"{nuevas} planta(s) cargada(s)")
-    if parcheadas:
-        partes.append(f"{parcheadas} conexión(es) enganchada(s)")
-    detalle = " y ".join(partes) if partes else "sin cambios"
-    return (f"**{nombre}** aplicado: {detalle}. "
-            "Revisá las capacidades y dale a **Resolver cascada**.")
 
 
 def _escenarios_disponibles() -> dict:

@@ -38,9 +38,15 @@ import streamlit as st
 
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
 from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
+from ui.gasoductos_editor import (
+    panel_gasoductos, obtener_intervenciones,
+    configurar_scope as configurar_scope_gd,
+)
+from pipeline.gasoductos.intervenciones import aplicar_intervenciones
 
 
 CLAVE_RESULTADO = "sandbox_resultado"
+CLAVE_INFORME = "sandbox_informe_ductos"
 
 COLUMNAS_VOLUMEN = ["vol_disponible", "vol_maximo", "vol_asignado",
                     "sobrante", "vol_derivado", "bypass"]
@@ -96,24 +102,65 @@ def panel_tab_plantas(resultados, params, factor_mm=1000.0):
             return
 
         plantas, flujos = guardado
+        _bloque_ductos(st.session_state.get(CLAVE_INFORME), factor_mm)
         _bloque_control(flujos, resultados.get("flujos_plantas"), factor_mm)
+        _bloque_impacto(flujos, resultados.get("flujos_plantas"), factor_mm)
         _bloque_balance(flujos)
         _bloque_flujos(flujos, factor_mm)
         _bloque_grafo(obtener_registro(), plantas, factor_mm)
         _bloque_kpis(plantas, factor_mm)
 
 
+def _comunes_con_ductos(comunes, intervenciones, compuestos):
+    """Aplica las intervenciones de ductos sobre una COPIA de `comunes`.
+
+    Las tablas de entrada del pipeline oficial no se tocan: si se modificaran en
+    el lugar, el resto del tablero pasaria a mostrar los numeros del sandbox sin
+    que nadie lo pidiera. Esa es la linea que separa a un sandbox de un cambio.
+    """
+    activas = [i for i in (intervenciones or []) if i.activa]
+    if not activas:
+        return comunes, None
+
+    yac, fdi, matriz, informe = aplicar_intervenciones(
+        tabla_yacimientos=comunes.get("tabla_total_yacimientos"),
+        tabla_flujos_directos=comunes.get("tabla_total_flujos_directos"),
+        intervenciones=activas,
+        compuestos=compuestos,
+        matriz_inyecciones=comunes.get("matriz_inyecciones"),
+    )
+
+    efectivo = dict(comunes)
+    efectivo["tabla_total_yacimientos"] = yac
+    efectivo["tabla_total_flujos_directos"] = fdi
+    if matriz is not None:
+        efectivo["matriz_inyecciones"] = matriz
+
+    return efectivo, informe
+
+
 def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
                    factor_mm, comunes):
     """Editor + botón de correr. Se envuelve en un fragment (ver abajo)."""
 
-    registro, errores, _ = panel_plantas(
-        retenidos_rtp=retenidos_rtp,
-        compuestos=compuestos,
-        config=params,
-        tbx_en_servicio=tbx_en_servicio,
-        factor_mm=factor_mm,
-    )
+    sub_plantas, sub_ductos = st.tabs(["🏭 Plantas", "🛢️ Gasoductos"])
+
+    with sub_plantas:
+        registro, errores, _ = panel_plantas(
+            retenidos_rtp=retenidos_rtp,
+            compuestos=compuestos,
+            config=params,
+            tbx_en_servicio=tbx_en_servicio,
+            factor_mm=factor_mm,
+        )
+
+    with sub_ductos:
+        intervenciones = panel_gasoductos(
+            tabla_yacimientos=comunes.get("tabla_total_yacimientos"),
+            tabla_flujos_directos=comunes.get("tabla_total_flujos_directos"),
+            compuestos=compuestos,
+            factor_mm=factor_mm,
+        )
 
     st.divider()
     correr = st.button(
@@ -128,7 +175,9 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
 
     with st.spinner("Resolviendo…"):
         try:
-            plantas, flujos = resolver_cascada(registro, comunes)
+            comunes_efectivo, informe = _comunes_con_ductos(
+                comunes, intervenciones, compuestos)
+            plantas, flujos = resolver_cascada(registro, comunes_efectivo)
         except Exception as e:
             st.session_state.pop(CLAVE_RESULTADO, None)
             st.error(f"La cascada falló: {type(e).__name__}: {e}")
@@ -136,6 +185,7 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
             return
 
     st.session_state[CLAVE_RESULTADO] = (plantas, flujos)
+    st.session_state[CLAVE_INFORME] = informe
 
     # Rerun de APP entero (no del fragment): la salida se dibuja afuera y tiene
     # que enterarse del resultado nuevo. Es el único momento en que se paga el
@@ -165,6 +215,7 @@ def _envolver_en_fragment(funcion):
             continue
         if callable(envuelta):
             configurar_scope("fragment")
+            configurar_scope_gd("fragment")
             return envuelta
 
     # Streamlit viejo: cada widget rerunea el script entero, como antes.
@@ -177,6 +228,91 @@ _fragmento_editor = _envolver_en_fragment(_cuerpo_editor)
 # ===========================================================================
 # Bloques
 # ===========================================================================
+
+def _bloque_ductos(informe, factor_mm):
+    """Que hicieron las intervenciones de ductos, si hubo alguna."""
+    if informe is None:
+        return
+
+    for error in informe.errores:
+        st.error(error)
+    for aviso in informe.avisos:
+        st.warning(aviso)
+
+    tabla = informe.tabla()
+    if tabla.empty:
+        return
+
+    with st.expander(f"🛢️ {len(tabla)} intervención(es) sobre los ductos", expanded=True):
+        vista = tabla.copy()
+        if "Volumen" in vista.columns:
+            vista["Volumen"] = vista["Volumen"] / factor_mm
+        st.dataframe(
+            vista.style.format({"Volumen": "{:,.2f}"}),
+            use_container_width=True, hide_index=True)
+        st.caption(
+            "Volúmenes en MMm3/d. El total que inyecta cada área no cambia: "
+            "sólo se redistribuye entre destinos.")
+
+
+def _bloque_impacto(flujos_sandbox, flujos_produccion, factor_mm):
+    """Cuánto gas ganó o perdió cada planta respecto de la corrida oficial.
+
+    El bloque de control dice SI hay diferencia; este dice DÓNDE. Es la lectura
+    que se busca al abrir o cerrar un ducto: el reparto entre áreas es el medio,
+    lo que importa es qué planta termina tratando más o menos gas.
+    """
+    if flujos_produccion is None:
+        return
+
+    comunes_idx = [n for n in flujos_sandbox.index if n in flujos_produccion.index]
+    nuevas = [n for n in flujos_sandbox.index if n not in flujos_produccion.index]
+
+    if not comunes_idx and not nuevas:
+        return
+
+    filas = []
+
+    for nombre in comunes_idx:
+        antes = float(flujos_produccion.loc[nombre, "vol_asignado"])
+        despues = float(flujos_sandbox.loc[nombre, "vol_asignado"])
+        if abs(despues - antes) < 1e-6:
+            continue
+        filas.append({
+            "Planta": nombre,
+            "Gas tratado antes": antes / factor_mm,
+            "Gas tratado después": despues / factor_mm,
+            "Δ": (despues - antes) / factor_mm,
+            "LGN Δ": (float(flujos_sandbox.loc[nombre, "lgn_asignado"])
+                      - float(flujos_produccion.loc[nombre, "lgn_asignado"])),
+        })
+
+    for nombre in nuevas:
+        despues = float(flujos_sandbox.loc[nombre, "vol_asignado"])
+        filas.append({
+            "Planta": f"➕ {nombre}",
+            "Gas tratado antes": 0.0,
+            "Gas tratado después": despues / factor_mm,
+            "Δ": despues / factor_mm,
+            "LGN Δ": float(flujos_sandbox.loc[nombre, "lgn_asignado"]),
+        })
+
+    if not filas:
+        return
+
+    tabla = pd.DataFrame(filas).sort_values("Δ", ascending=False)
+
+    with st.expander("📊 Impacto por planta", expanded=True):
+        st.dataframe(
+            tabla.style.format({
+                "Gas tratado antes": "{:,.2f}", "Gas tratado después": "{:,.2f}",
+                "Δ": "{:+,.2f}", "LGN Δ": "{:+,.1f}",
+            }),
+            use_container_width=True, hide_index=True)
+        st.caption(
+            "Gas en MMm3/d, LGN en tn/d. Δ es contra la corrida oficial. "
+            "Las plantas que no cambiaron no se listan.")
+
 
 def _bloque_control(flujos_sandbox, flujos_produccion, factor_mm):
     """Compara las tres plantas base contra la cascada oficial.
