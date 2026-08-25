@@ -93,6 +93,10 @@ from outputs.writers import guardar
 
 from ui.diagnosticos import capturar, mostrar as mostrar_diagnostico
 
+from ui.tab_plantas import panel_tab_plantas
+
+
+
 st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
 
 
@@ -695,6 +699,9 @@ def ejecutar_pipeline(path, params, guardar_csvs) -> dict:
         },
     }
 
+    resultados["comunes"] = comunes
+    resultados["retenidos_rtp"] = retenidos_rtp
+
     return {
         "tablas": {
             "Total Yacimientos": tabla_total_yacimientos,
@@ -738,9 +745,9 @@ plantas = resultados["plantas"]
 flujos_plantas = resultados["flujos_plantas"]
 tbx_en_servicio_res = resultados["tbx_en_servicio"]
 
-tab_resumen, tab_cascada, tab_tablas, tab_red, tab_tbx, tab_dp, tab_mega = st.tabs(
+tab_resumen, tab_cascada, tab_tablas, tab_red, tab_tbx, tab_dp, tab_mega, tab_sandbox = st.tabs(
     ["📊 Resumen", "🔗 Cascada", "📋 Tablas totales", "🗺️ Mapa de la red",
-     "TTY - TBX", "TTY - Dew Point", "MEGA"]
+     "TTY - TBX", "TTY - Dew Point", "MEGA", "Plantas (sandbox)"]
 )
 
 with tab_resumen:
@@ -796,6 +803,9 @@ with tab_tablas:
 
 with tab_red:
     panel_mapa(resultados)
+
+with tab_sandbox:
+    panel_tab_plantas(resultados, PARAMS, FACTOR_MM)
 
 
 def _mostrar_planta(tab, nombre_planta, datos):
