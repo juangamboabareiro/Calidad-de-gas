@@ -37,7 +37,7 @@ import pandas as pd
 import streamlit as st
 
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
-from ui.plantas_editor import panel_plantas, obtener_registro
+from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
 
 
 CLAVE_RESULTADO = "sandbox_resultado"
@@ -86,33 +86,8 @@ def panel_tab_plantas(resultados, params, factor_mm=1000.0):
     col_editor, col_salida = st.columns([2, 3], gap="large")
 
     with col_editor:
-        registro, errores, _ = panel_plantas(
-            retenidos_rtp=retenidos_rtp,
-            compuestos=compuestos,
-            config=params,
-            tbx_en_servicio=tbx_en_servicio,
-            factor_mm=factor_mm,
-        )
-
-        st.divider()
-        correr = st.button(
-            "▶️ Resolver cascada", type="primary", use_container_width=True,
-            disabled=bool(errores), key="btn_correr_sandbox")
-
-        if errores:
-            st.caption("Corregí los errores de arriba para poder correr.")
-
-    if correr:
-        with st.spinner("Resolviendo…"):
-            try:
-                plantas, flujos = resolver_cascada(registro, comunes)
-            except Exception as e:
-                st.session_state.pop(CLAVE_RESULTADO, None)
-                with col_salida:
-                    st.error(f"La cascada falló: {type(e).__name__}: {e}")
-                    st.exception(e)
-                return
-        st.session_state[CLAVE_RESULTADO] = (plantas, flujos)
+        _fragmento_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
+                          factor_mm, comunes)
 
     with col_salida:
         guardado = st.session_state.get(CLAVE_RESULTADO)
@@ -126,6 +101,77 @@ def panel_tab_plantas(resultados, params, factor_mm=1000.0):
         _bloque_flujos(flujos, factor_mm)
         _bloque_grafo(obtener_registro(), plantas, factor_mm)
         _bloque_kpis(plantas, factor_mm)
+
+
+def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
+                   factor_mm, comunes):
+    """Editor + botón de correr. Se envuelve en un fragment (ver abajo)."""
+
+    registro, errores, _ = panel_plantas(
+        retenidos_rtp=retenidos_rtp,
+        compuestos=compuestos,
+        config=params,
+        tbx_en_servicio=tbx_en_servicio,
+        factor_mm=factor_mm,
+    )
+
+    st.divider()
+    correr = st.button(
+        "▶️ Resolver cascada", type="primary", use_container_width=True,
+        disabled=bool(errores), key="btn_correr_sandbox")
+
+    if errores:
+        st.caption("Corregí los errores de arriba para poder correr.")
+
+    if not correr:
+        return
+
+    with st.spinner("Resolviendo…"):
+        try:
+            plantas, flujos = resolver_cascada(registro, comunes)
+        except Exception as e:
+            st.session_state.pop(CLAVE_RESULTADO, None)
+            st.error(f"La cascada falló: {type(e).__name__}: {e}")
+            st.exception(e)
+            return
+
+    st.session_state[CLAVE_RESULTADO] = (plantas, flujos)
+
+    # Rerun de APP entero (no del fragment): la salida se dibuja afuera y tiene
+    # que enterarse del resultado nuevo. Es el único momento en que se paga el
+    # redibujado completo, y pasa una vez por corrida, no por cada checkbox.
+    st.rerun()
+
+
+# `st.fragment` (Streamlit >= 1.37) hace que tocar un widget del editor
+# rerunee SOLO este bloque en vez del script entero. Sin esto, cada checkbox
+# redibuja los otros siete tabs — tablas, mapa y graphviz incluidos — y por eso
+# se siente lento. Con Streamlit viejo se degrada al comportamiento de antes.
+def _envolver_en_fragment(funcion):
+    """Devuelve `funcion` envuelta en `st.fragment`, si esta version lo tiene.
+
+    Se prueban los dos nombres porque `st.fragment` se llamo
+    `st.experimental_fragment` entre 1.33 y 1.36. Y se verifica que lo devuelto
+    sea invocable: si no, se degrada al comportamiento de siempre en vez de
+    romper el tab.
+    """
+    for nombre in ("fragment", "experimental_fragment"):
+        decorador = getattr(st, nombre, None)
+        if decorador is None:
+            continue
+        try:
+            envuelta = decorador(funcion)
+        except Exception:
+            continue
+        if callable(envuelta):
+            configurar_scope("fragment")
+            return envuelta
+
+    # Streamlit viejo: cada widget rerunea el script entero, como antes.
+    return funcion
+
+
+_fragmento_editor = _envolver_en_fragment(_cuerpo_editor)
 
 
 # ===========================================================================

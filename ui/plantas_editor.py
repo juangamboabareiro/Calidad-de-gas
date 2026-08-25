@@ -47,6 +47,29 @@ from io_.cromatografias_planta import cargar_cromas_extra, resumen as resumen_cr
 CLAVE = "registro_plantas"
 CLAVE_CROMAS = "cromas_extra_por_planta"
 
+# Scope del rerun. Cuando el editor corre adentro de un `st.fragment`, hay que
+# pedir `scope="fragment"` o Streamlit rerunea el script ENTERO y se pierde toda
+# la ventaja: volveria a dibujar los otros siete tabs por cada checkbox.
+_SCOPE = "app"
+
+
+def configurar_scope(scope: str):
+    """La llama el tab para avisar que estamos adentro de un fragment."""
+    global _SCOPE
+    _SCOPE = scope
+
+
+def _rerun():
+    if _SCOPE == "fragment":
+        try:
+            st.rerun(scope="fragment")
+        except TypeError:
+            # Streamlit viejo, sin `scope`. `st.rerun` levanta una excepcion de
+            # control que hereda de BaseException, asi que este `except TypeError`
+            # no se la come: solo atrapa la firma incompatible.
+            pass
+    st.rerun()
+
 
 # ===========================================================================
 # Estado
@@ -87,7 +110,11 @@ def _aplicar_cromas():
     huerfanas = []
 
     for planta in registro.values():
-        planta.cromas_extra = cromas.get(planta.nombre, [])
+        subidas = cromas.get(planta.nombre)
+        if subidas is not None:
+            # Solo pisa si hay cromas para ESA planta en el buffer del uploader.
+            # Si no, se respetan las que hubieran venido dentro de un escenario.
+            planta.cromas_extra = subidas
 
     for nombre in cromas:
         if nombre not in registro:
@@ -174,7 +201,7 @@ def _bloque_alta(registro, compuestos):
                         "Arranca sin retención, sin capacidades y sin "
                         "conexiones: cargale los retenidos y decidí a dónde "
                         "manda el sobrante.")
-                    st.rerun()
+                    _rerun()
 
         borrables = [n for n, p in registro.items() if not p.es_base]
         if borrables:
@@ -187,20 +214,111 @@ def _bloque_alta(registro, compuestos):
                 del registro[a_borrar]
                 for p in registro.values():
                     p.conexiones = [c for c in p.conexiones if c.destino != a_borrar]
-                st.rerun()
+                _rerun()
         else:
             st.caption("Las tres plantas base no se pueden eliminar.")
 
-        col_e, col_f = st.columns(2)
-        if col_e.button("💾 Guardar escenario", use_container_width=True, key="btn_guardar_reg"):
-            ruta = guardar_registro(registro)
-            st.success(f"Guardado en `{ruta}`.")
-        if col_f.button("📂 Cargar escenario", use_container_width=True, key="btn_cargar_reg"):
+        _bloque_escenarios(registro)
+
+
+def _bloque_escenarios(registro):
+    """Cargar y guardar escenarios enteros.
+
+    Armar una planta a mano son ~20 interacciones, y cada una es un rerun. Un
+    escenario prearmado la deja lista de un click, con cromatografias incluidas.
+    """
+    st.divider()
+    st.caption("**Escenarios**")
+
+    disponibles = _escenarios_disponibles()
+    if disponibles:
+        col_a, col_b = st.columns([2, 1])
+        elegido = col_a.selectbox(
+            "Escenario prearmado", list(disponibles), key="esc_sel",
+            label_visibility="collapsed")
+        if col_b.button("Cargar", use_container_width=True, key="btn_esc_load"):
+            import json as _json
             try:
-                st.session_state[CLAVE] = cargar_registro()
-                st.rerun()
-            except FileNotFoundError:
-                st.error("No hay `datos/plantas.json` guardado todavía.")
+                with open(disponibles[elegido], encoding="utf-8") as fh:
+                    nuevas, parcheadas = aplicar_escenario(registro, _json.load(fh))
+                # Las cromas del escenario vienen adentro de cada planta. Hay que
+                # limpiar el buffer del uploader: si no, `_aplicar_cromas` se las
+                # pisa con una lista vacia en el proximo rerun.
+                st.session_state[CLAVE_CROMAS] = {}
+                st.success(
+                    f"**{elegido}**: {nuevas} planta(s) cargada(s)"
+                    + (f", {parcheadas} conexión(es) enganchada(s)." if parcheadas else "."))
+                _rerun()
+            except Exception as e:
+                st.error(f"No se pudo cargar: {e}")
+
+    subido = st.file_uploader(
+        "…o subí un escenario (.json)", type=["json"], key="esc_up")
+    if subido is not None and st.button(
+            "Aplicar escenario subido", use_container_width=True, key="btn_esc_up"):
+        import json as _json
+        try:
+            datos = _json.loads(subido.getvalue().decode("utf-8"))
+            aplicar_escenario(registro, datos)
+            st.session_state[CLAVE_CROMAS] = {}
+            _rerun()
+        except Exception as e:
+            st.error(f"El archivo no es un escenario válido: {e}")
+
+    col_e, col_f = st.columns(2)
+    if col_e.button("💾 Guardar", use_container_width=True, key="btn_guardar_reg"):
+        ruta = guardar_registro(registro)
+        st.success(f"Guardado en `{ruta}`.")
+
+    import json as _json
+    col_f.download_button(
+        "⬇️ Descargar", use_container_width=True, key="btn_desc_reg",
+        data=_json.dumps([p.a_dict() for p in registro.values()],
+                         indent=2, ensure_ascii=False).encode("utf-8"),
+        file_name="escenario_plantas.json", mime="application/json")
+
+
+def aplicar_escenario(registro: dict, datos: list) -> tuple[int, int]:
+    """Mezcla un escenario sobre el registro actual. Devuelve (nuevas, parcheadas).
+
+    MERGE, no reemplazo. Si reemplazara, cargar un escenario con una sola planta
+    se llevaria puestas las tres base, que se siembran desde los parametros de
+    la sidebar. Las plantas del archivo se agregan o pisan por nombre; las que
+    no estan en el archivo quedan como estaban.
+
+    Una entrada con `"solo_conexiones": true` es un PARCHE: se le aplican al
+    registro existente unicamente `conexiones` y `deriva`, sin tocar capacidades
+    ni retenidos. Sirve para que un escenario pueda enganchar su planta nueva a
+    la cascada sin congelar las capacidades de las base con las de otra corrida.
+    """
+    from pipeline.plantas.registro import PlantaConfig, ConexionSalida
+
+    nuevas = parcheadas = 0
+
+    for d in datos:
+        nombre = d["nombre"]
+
+        if d.get("solo_conexiones") and nombre in registro:
+            registro[nombre].conexiones = [
+                ConexionSalida.desde_dict(c) for c in d.get("conexiones", [])]
+            registro[nombre].deriva = bool(d.get("deriva", True))
+            parcheadas += 1
+            continue
+
+        registro[nombre] = PlantaConfig.desde_dict(d)
+        nuevas += 1
+
+    return nuevas, parcheadas
+
+
+def _escenarios_disponibles() -> dict:
+    """{nombre visible: ruta} de los .json en `escenarios/`."""
+    from pathlib import Path
+    carpeta = Path("escenarios")
+    if not carpeta.is_dir():
+        return {}
+    return {p.stem.replace("_", " ").title(): str(p)
+            for p in sorted(carpeta.glob("*.json"))}
 
 
 def _bloque_cromas(compuestos, factor_mm):
@@ -232,7 +350,7 @@ def _bloque_cromas(compuestos, factor_mm):
         if st.session_state.get(CLAVE_CROMAS) and st.button(
                 "Descartar cromatografías cargadas", key="btn_limpiar_cromas"):
             st.session_state[CLAVE_CROMAS] = {}
-            st.rerun()
+            _rerun()
 
 
 def _bloque_general(planta: PlantaConfig, factor_mm):
@@ -330,7 +448,7 @@ def _bloque_retenidos(planta: PlantaConfig, compuestos):
         col_a, col_b = st.columns(2)
         if col_a.button("Todo en 0", key=f"ret0_{planta.nombre}"):
             planta.retenidos = pd.DataFrame([{c: 0.0 for c in compuestos}])
-            st.rerun()
+            _rerun()
         copiable = [n for n in obtener_registro() if n != planta.nombre]
         if copiable:
             origen = col_b.selectbox(
@@ -340,7 +458,7 @@ def _bloque_retenidos(planta: PlantaConfig, compuestos):
                 otra = obtener_registro()[origen].retenidos
                 if otra is not None:
                     planta.retenidos = otra.copy()
-                    st.rerun()
+                    _rerun()
 
 
 def _bloque_conexiones(planta: PlantaConfig, registro, factor_mm):

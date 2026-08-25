@@ -144,8 +144,13 @@ class PlantaConfig:
         return [c.destino for c in self.conexiones] if self.deriva else []
 
     def a_dict(self) -> dict:
-        """Version serializable. Las `cromas_extra` NO se serializan: son un
-        archivo aparte que se vuelve a subir."""
+        """Version serializable, INCLUIDAS las cromatografias cargadas a mano.
+
+        Al principio las dejaba afuera (son un archivo aparte que se vuelve a
+        subir), pero eso obliga a repetir dos pasos manuales cada vez que se
+        recupera un escenario. Un escenario guardado tiene que poder volver
+        entero de un click.
+        """
         return {
             "nombre": self.nombre,
             "nombre_pool": self.nombre_pool,
@@ -161,6 +166,18 @@ class PlantaConfig:
             "activa": self.activa,
             "color": self.color,
             "es_base": self.es_base,
+            "cromas_extra": [
+                {
+                    "vol_derivacion": float(c["vol_derivacion"]),
+                    "origen": str(c.get("origen", "")),
+                    # La cromato es una Series indexada por compuesto; a dict y
+                    # de vuelta, para no depender del formato binario de pandas.
+                    "cromato_derivacion": {
+                        str(k): float(v)
+                        for k, v in dict(c["cromato_derivacion"]).items()},
+                }
+                for c in (self.cromas_extra or [])
+            ],
         }
 
     @staticmethod
@@ -180,6 +197,15 @@ class PlantaConfig:
             activa=bool(d.get("activa", True)),
             color=d.get("color", "#EAF2F8"),
             es_base=bool(d.get("es_base", False)),
+            cromas_extra=[
+                {
+                    "vol_derivacion": float(c["vol_derivacion"]),
+                    "origen": c.get("origen", ""),
+                    "cromato_derivacion": pd.Series(
+                        c["cromato_derivacion"], dtype="float64"),
+                }
+                for c in d.get("cromas_extra", [])
+            ],
         )
 
 
