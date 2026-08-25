@@ -38,15 +38,45 @@ import streamlit as st
 
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
 from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
-from ui.gasoductos_editor import (
-    panel_gasoductos, obtener_intervenciones,
-    configurar_scope as configurar_scope_gd,
-)
-from pipeline.gasoductos.intervenciones import aplicar_intervenciones
+# El sub-panel de gasoductos se importa de forma tolerante A PROPOSITO.
+#
+# `app.py` importa este modulo a nivel de archivo, asi que un ImportError aca
+# tumba el tablero ENTERO: los ocho tabs, incluidos los siete que no tienen nada
+# que ver con el sandbox. Que falte un archivo opcional no puede dejar sin
+# tablero a alguien que solo queria mirar el reparto del gas.
+#
+# Si el paquete `pipeline.gasoductos` no esta, el tab arranca igual y el
+# sub-tab de ductos explica que falta y como resolverlo.
+try:
+    from ui.gasoductos_editor import (
+        panel_gasoductos, obtener_intervenciones,
+        configurar_scope as configurar_scope_gd,
+    )
+    from pipeline.gasoductos.intervenciones import aplicar_intervenciones
+    GASODUCTOS_DISPONIBLE = True
+    ERROR_GASODUCTOS = None
+except ImportError as _e:
+    GASODUCTOS_DISPONIBLE = False
+    ERROR_GASODUCTOS = str(_e)
+
+    def panel_gasoductos(*a, **k):
+        return []
+
+    def obtener_intervenciones():
+        return []
+
+    def configurar_scope_gd(_scope):
+        pass
+
+    def aplicar_intervenciones(*a, **k):
+        raise RuntimeError("pipeline.gasoductos no está instalado")
 
 
 CLAVE_RESULTADO = "sandbox_resultado"
 CLAVE_INFORME = "sandbox_informe_ductos"
+
+# Misma clave que lee `ui/mapa.py`. Si cambia alla, cambia aca.
+CLAVE_RED_MAPA = "sandbox_red_gasoductos"
 
 COLUMNAS_VOLUMEN = ["vol_disponible", "vol_maximo", "vol_asignado",
                     "sobrante", "vol_derivado", "bypass"]
@@ -136,7 +166,26 @@ def _comunes_con_ductos(comunes, intervenciones, compuestos):
     if matriz is not None:
         efectivo["matriz_inyecciones"] = matriz
 
+    # La red modificada queda a disposicion del tab del mapa, que ofrece un
+    # toggle para dibujarla en vez de la oficial. Se deja en `session_state` y
+    # no se devuelve porque el mapa no recibe nada de esta funcion: son dos tabs
+    # distintos que solo comparten el estado de la sesion.
+    _publicar_red_sandbox(yac)
+
     return efectivo, informe
+
+
+def _publicar_red_sandbox(yac):
+    """Deja la red del sandbox donde el mapa la busca."""
+    columnas = {"Area", "Gasoducto", "Volumen_inyectado"}
+
+    if yac is None or not columnas.issubset(yac.columns):
+        return
+
+    st.session_state[CLAVE_RED_MAPA] = yac[
+        ["Area", "Gasoducto", "Volumen_inyectado"]
+    ].rename(columns={"Area": "origen", "Gasoducto": "destino",
+                      "Volumen_inyectado": "valor"})
 
 
 def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
@@ -155,12 +204,22 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
         )
 
     with sub_ductos:
-        intervenciones = panel_gasoductos(
-            tabla_yacimientos=comunes.get("tabla_total_yacimientos"),
-            tabla_flujos_directos=comunes.get("tabla_total_flujos_directos"),
-            compuestos=compuestos,
-            factor_mm=factor_mm,
-        )
+        if not GASODUCTOS_DISPONIBLE:
+            st.error(
+                "El módulo de gasoductos no está instalado: "
+                f"`{ERROR_GASODUCTOS}`.\n\n"
+                "Falta la carpeta **`pipeline/gasoductos/`** en el repo, con "
+                "`__init__.py` e `intervenciones.py`. El resto del tablero "
+                "funciona igual."
+            )
+            intervenciones = []
+        else:
+            intervenciones = panel_gasoductos(
+                tabla_yacimientos=comunes.get("tabla_total_yacimientos"),
+                tabla_flujos_directos=comunes.get("tabla_total_flujos_directos"),
+                compuestos=compuestos,
+                factor_mm=factor_mm,
+            )
 
     st.divider()
     correr = st.button(
@@ -215,7 +274,7 @@ def _envolver_en_fragment(funcion):
             continue
         if callable(envuelta):
             configurar_scope("fragment")
-            configurar_scope_gd("fragment")
+            configurar_scope_gd("fragment")   # no-op si gasoductos no está
             return envuelta
 
     # Streamlit viejo: cada widget rerunea el script entero, como antes.
