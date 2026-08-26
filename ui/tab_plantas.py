@@ -38,9 +38,11 @@ import streamlit as st
 
 from ui.compat import ancho, arrow_safe
 from ui.sandbox_estado import boton_restablecer, hay_algo_que_restablecer
+from ui.descargas import armar_zip, nombre_zip
 
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
-from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
+from ui.plantas_editor import (
+    panel_plantas, panel_escenarios, obtener_registro, configurar_scope)
 # Todo lo de gasoductos entra por `ui.gasoductos_editor`, que es la unica
 # frontera con `pipeline.gasoductos` y NUNCA falla al importarse: si el paquete
 # no esta, expone las mismas funciones devolviendo vacio. Importar
@@ -61,6 +63,11 @@ CLAVE_INFORME = "sandbox_informe_ductos"
 
 # Misma clave que lee `ui/mapa.py`. Si cambia alla, cambia aca.
 CLAVE_RED_MAPA = "sandbox_red_gasoductos"
+
+# Los flujos de la corrida oficial, para que `_barra_acciones` pueda armar el
+# impacto sin recibir `resultados`: el editor corre dentro de un fragment y no
+# lo tiene a mano.
+CLAVE_FLUJOS_OFICIALES = "sandbox_flujos_oficiales"
 
 COLUMNAS_VOLUMEN = ["vol_disponible", "vol_maximo", "vol_asignado",
                     "sobrante", "vol_derivado", "bypass"]
@@ -100,6 +107,7 @@ def panel_tab_plantas(resultados, params, factor_mm=1000.0):
 
     comunes = resultados["comunes"]
     retenidos_rtp = resultados["retenidos_rtp"]
+    st.session_state[CLAVE_FLUJOS_OFICIALES] = resultados.get("flujos_plantas")
     compuestos = comunes["COMPUESTOS"]
     tbx_en_servicio = bool(resultados.get("tbx_en_servicio", True))
 
@@ -123,6 +131,50 @@ def panel_tab_plantas(resultados, params, factor_mm=1000.0):
         _bloque_flujos(flujos, factor_mm)
         _bloque_grafo(obtener_registro(), plantas, factor_mm)
         _bloque_kpis(plantas, factor_mm)
+
+
+def _barra_acciones(registro, factor_mm):
+    """Descargar la simulación y restablecer, uno al lado del otro.
+
+    Van juntos y en ese orden a proposito: el que va a restablecer pasa primero
+    por el boton que le evita perder el trabajo. Es la misma razon por la que el
+    aviso de confirmacion menciona la descarga.
+
+    La descarga NO exige haber resuelto la cascada: configurar todo y querer
+    guardarlo antes de restablecer es un caso tan valido como bajar resultados.
+    """
+    guardado = st.session_state.get(CLAVE_RESULTADO)
+    plantas, flujos = guardado if guardado else (None, None)
+
+    col_bajar, col_reset = st.columns(2)
+
+    with col_bajar:
+        st.download_button(
+            "⬇️ Descargar simulación",
+            data=armar_zip(
+                registro=registro,
+                intervenciones=obtener_intervenciones(),
+                plantas=plantas,
+                flujos=flujos,
+                flujos_produccion=st.session_state.get(CLAVE_FLUJOS_OFICIALES),
+                informe=st.session_state.get(CLAVE_INFORME),
+                factor_mm=factor_mm,
+            ),
+            file_name=nombre_zip(),
+            mime="application/zip",
+            key="btn_bajar_sim",
+            help=("Un ZIP con la configuración (para volver a cargarla) y los "
+                  "resultados en CSV (para Excel). Adentro hay un LEEME que "
+                  "explica cada archivo."),
+            **ancho(),
+        )
+        if guardado is None:
+            st.caption("Sin resolver todavía: trae sólo la configuración.")
+
+    with col_reset:
+        if hay_algo_que_restablecer():
+            from ui.plantas_editor import _rerun as _rerun_editor
+            boton_restablecer(_rerun_editor)
 
 
 def _comunes_con_ductos(comunes, intervenciones, compuestos):
@@ -176,13 +228,8 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
                    factor_mm, comunes):
     """Editor + botón de correr. Se envuelve en un fragment (ver abajo)."""
 
-    # Arriba y a la vista: es la salida de emergencia. Enterrado en un expander
-    # no sirve para alguien que no sabe que se puede deshacer.
-    if hay_algo_que_restablecer():
-        from ui.plantas_editor import _rerun as _rerun_editor
-        boton_restablecer(_rerun_editor)
-
-    sub_plantas, sub_ductos = st.tabs(["🏭 Plantas", "🛢️ Gasoductos"])
+    sub_plantas, sub_ductos, sub_escenarios = st.tabs(
+        ["🏭 Plantas", "🛢️ Gasoductos", "📁 Escenarios"])
 
     with sub_plantas:
         registro, errores, _ = panel_plantas(
@@ -201,6 +248,9 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
             factor_mm=factor_mm,
         )
 
+    with sub_escenarios:
+        panel_escenarios(registro)
+
     st.divider()
     correr = st.button(
         "▶️ Resolver cascada", type="primary", **ancho(),
@@ -208,6 +258,8 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
 
     if errores:
         st.caption("Corregí los errores de arriba para poder correr.")
+
+    _barra_acciones(registro, factor_mm)
 
     if not correr:
         return

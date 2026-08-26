@@ -1,0 +1,11 @@
+{
+  "_nota": "Saca de servicio el ducto que MÁS volumen transporta. Su gas se reparte entre los otros destinos de cada área que le inyectaba. Ojo con el aviso: las áreas que sólo tenían ese ducto quedan sin ruta y su gas no se redistribuye.",
+  "plantas": [],
+  "gasoductos": [
+    {
+      "tipo": "baja",
+      "nombre": "#1",
+      "activa": true
+    }
+  ]
+}

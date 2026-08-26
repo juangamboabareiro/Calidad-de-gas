@@ -1,0 +1,68 @@
+{
+  "_nota": "Tren nuevo + baja del segundo ducto + ducto nuevo hacia MEGA. Las bajas se aplican antes que las altas, y las referencias '#N' se resuelven contra el estado inicial: la baja no cambia a qué apunta el '#1' del alta.",
+  "plantas": [
+    {
+      "nombre": "TTY - Tren 3",
+      "nombre_pool": "TTY",
+      "capacidad_evacuacion": 600.0,
+      "capacidad_ingreso": 15000.0,
+      "retenidos": {
+        "C1": 0.0,
+        "C2": 0.02,
+        "C3": 0.18,
+        "iC4": 0.55,
+        "nC4": 0.6,
+        "iC5": 0.92,
+        "nC5": 0.94,
+        "nC6": 0.98,
+        "nC7": 1.0,
+        "nC8": 1.0,
+        "nC9": 1.0,
+        "nC10": 1.0,
+        "N2": 0.0,
+        "CO2": 0.0
+      },
+      "conexiones": [],
+      "deriva": true,
+      "toma_volumen_del_pool": false,
+      "activa": true,
+      "color": "#16A085",
+      "es_base": false,
+      "cromas_extra": []
+    },
+    {
+      "nombre": "TTY - Dew Point",
+      "solo_conexiones": true,
+      "deriva": true,
+      "conexiones": [
+        {
+          "destino": "TTY - Tren 3",
+          "proporcion": 0.5,
+          "tope": null,
+          "comparte_pool": true
+        },
+        {
+          "destino": "MEGA",
+          "proporcion": 0.5,
+          "tope": null,
+          "comparte_pool": false
+        }
+      ]
+    }
+  ],
+  "gasoductos": [
+    {
+      "tipo": "baja",
+      "nombre": "#2",
+      "activa": true
+    },
+    {
+      "tipo": "alta",
+      "nombre": "GD Sur",
+      "area_origen": "#1",
+      "planta_destino": "MEGA",
+      "fraccion": 0.25,
+      "activa": true
+    }
+  ]
+}

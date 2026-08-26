@@ -240,10 +240,8 @@ def _bloque_alta(registro, compuestos):
         else:
             st.caption("Las tres plantas base no se pueden eliminar.")
 
-        _bloque_escenarios(registro)
 
-
-def _bloque_escenarios(registro):
+def panel_escenarios(registro):
     """Cargar y guardar escenarios enteros: plantas Y gasoductos.
 
     Armar una planta a mano son ~20 interacciones, y cada una es un rerun. Un
@@ -257,8 +255,12 @@ def _bloque_escenarios(registro):
     # `pipeline.gasoductos` no este instalado.
     from ui.gasoductos_editor import obtener_intervenciones, Intervencion
 
-    st.divider()
-    st.caption("**Escenarios** — incluyen plantas y gasoductos")
+    st.markdown("### 📁 Escenarios")
+    st.caption(
+        "Un escenario guarda **las plantas y los gasoductos juntos**: es una "
+        "pregunta completa, no se parte en dos archivos.")
+
+    _mostrar_flash()
 
     def _aplicar(datos, etiqueta):
         plantas_json, ductos_json = partir(datos)

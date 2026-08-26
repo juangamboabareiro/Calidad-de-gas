@@ -1,0 +1,95 @@
+{
+  "_nota": "Turboexpander nuevo con pool propio, alimentado por dos corrientes cargadas a mano (5,40 MMm3/d). Capacidad de evacuación calibrada para que SATURE y se vea el bypass. Recibe además el 40% del sobrante de Dew Point.",
+  "plantas": [
+    {
+      "nombre": "TBX Aguada",
+      "nombre_pool": "TBX Aguada",
+      "capacidad_evacuacion": 1100.0,
+      "capacidad_ingreso": 6000.0,
+      "retenidos": {
+        "C1": 0.005,
+        "C2": 0.72,
+        "C3": 0.97,
+        "iC4": 0.99,
+        "nC4": 0.99,
+        "iC5": 1.0,
+        "nC5": 1.0,
+        "nC6": 1.0,
+        "nC7": 1.0,
+        "nC8": 1.0,
+        "nC9": 1.0,
+        "nC10": 1.0,
+        "N2": 0.0,
+        "CO2": 0.0
+      },
+      "conexiones": [],
+      "deriva": false,
+      "toma_volumen_del_pool": true,
+      "activa": true,
+      "color": "#BB8FCE",
+      "es_base": false,
+      "cromas_extra": [
+        {
+          "vol_derivacion": 3800.0,
+          "origen": "Aguada del Chivo",
+          "cromato_derivacion": {
+            "C1": 0.825,
+            "C2": 0.092,
+            "C3": 0.045,
+            "iC4": 0.0085,
+            "nC4": 0.0125,
+            "iC5": 0.004,
+            "nC5": 0.0035,
+            "nC6": 0.0025,
+            "nC7": 0.0012,
+            "nC8": 0.0005,
+            "nC9": 0.0002,
+            "nC10": 0.0001,
+            "N2": 0.0035,
+            "CO2": 0.0015
+          }
+        },
+        {
+          "vol_derivacion": 1600.0,
+          "origen": "Loma Alta Sur",
+          "cromato_derivacion": {
+            "C1": 0.885,
+            "C2": 0.068,
+            "C3": 0.025,
+            "iC4": 0.0045,
+            "nC4": 0.006,
+            "iC5": 0.0018,
+            "nC5": 0.0015,
+            "nC6": 0.001,
+            "nC7": 0.0005,
+            "nC8": 0.0002,
+            "nC9": 0.0001,
+            "nC10": 0.0001,
+            "N2": 0.0048,
+            "CO2": 0.0015
+          }
+        }
+      ]
+    },
+    {
+      "nombre": "TTY - Dew Point",
+      "solo_conexiones": true,
+      "deriva": true,
+      "conexiones": [
+        {
+          "destino": "MEGA",
+          "proporcion": 0.6,
+          "tope": null,
+          "comparte_pool": false
+        },
+        {
+          "destino": "TBX Aguada",
+          "proporcion": 0.4,
+          "tope": null,
+          "comparte_pool": false
+        }
+      ]
+    }
+  ],
+  "gasoductos": []
+}

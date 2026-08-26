@@ -1,0 +1,54 @@
+{
+  "_nota": "Tercer tren de dew point sobre el pool TTY. Dew Point reparte su sobrante mitad al tren nuevo (mismo gas) y mitad a MEGA (derivación real). No necesita cromatografías: comparte el gas de TTY.",
+  "plantas": [
+    {
+      "nombre": "TTY - Tren 3",
+      "nombre_pool": "TTY",
+      "capacidad_evacuacion": 600.0,
+      "capacidad_ingreso": 15000.0,
+      "retenidos": {
+        "C1": 0.0,
+        "C2": 0.02,
+        "C3": 0.18,
+        "iC4": 0.55,
+        "nC4": 0.6,
+        "iC5": 0.92,
+        "nC5": 0.94,
+        "nC6": 0.98,
+        "nC7": 1.0,
+        "nC8": 1.0,
+        "nC9": 1.0,
+        "nC10": 1.0,
+        "N2": 0.0,
+        "CO2": 0.0
+      },
+      "conexiones": [],
+      "deriva": true,
+      "toma_volumen_del_pool": false,
+      "activa": true,
+      "color": "#16A085",
+      "es_base": false,
+      "cromas_extra": []
+    },
+    {
+      "nombre": "TTY - Dew Point",
+      "solo_conexiones": true,
+      "deriva": true,
+      "conexiones": [
+        {
+          "destino": "TTY - Tren 3",
+          "proporcion": 0.5,
+          "tope": null,
+          "comparte_pool": true
+        },
+        {
+          "destino": "MEGA",
+          "proporcion": 0.5,
+          "tope": null,
+          "comparte_pool": false
+        }
+      ]
+    }
+  ],
+  "gasoductos": []
+}

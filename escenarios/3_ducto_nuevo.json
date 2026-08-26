@@ -1,0 +1,14 @@
+{
+  "_nota": "Abre un ducto desde el área de MAYOR volumen hacia TTY, llevándose el 30% de lo que esa área inyecta. El resto de sus destinos se reescala proporcionalmente. '#1' = primera área por volumen: así el escenario funciona sin conocer los nombres de tus áreas.",
+  "plantas": [],
+  "gasoductos": [
+    {
+      "tipo": "alta",
+      "nombre": "GD Norte",
+      "area_origen": "#1",
+      "planta_destino": "TTY",
+      "fraccion": 0.3,
+      "activa": true
+    }
+  ]
+}

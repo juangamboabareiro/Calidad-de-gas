@@ -48,6 +48,10 @@ CLAVES_DATOS = (
     "gasoductos_flash",
 )
 
+# `sandbox_flujos_oficiales` NO va en CLAVES_DATOS: es un cache de la corrida
+# OFICIAL, no algo que el usuario configuro. Borrarlo dejaria el bloque de
+# control y el impacto sin referencia hasta el proximo rerun del tab.
+
 # Prefijos de las claves de WIDGET. Ver "LA TRAMPA DE LOS WIDGETS" arriba.
 PREFIJOS_WIDGETS = (
     # plantas_editor
@@ -59,6 +63,7 @@ PREFIJOS_WIDGETS = (
     # aplicar despues del reset.
     "up_cromas", "btn_crear", "btn_borrar", "btn_guardar_reg", "btn_desc_reg",
     "btn_esc_load", "btn_esc_up", "btn_limpiar_cromas", "btn_correr_sandbox",
+    "btn_bajar_sim",
     # gasoductos_editor
     "gd_",
 )
