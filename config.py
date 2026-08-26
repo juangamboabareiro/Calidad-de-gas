@@ -43,7 +43,9 @@ FACTOR_RETENIDOS_MEGA    = 1.0    # antes /1000: asumia retenidos en kg/d
 MAX_DERIVACION_TTY_DP_A_MEGA    = 5 * FACTOR_MMm3_A_UNIDAD_VOLUMEN
 MAX_DERIVACION_TTY_TBX_A_TTY_DP = (CAPACIDAD_TTY_DP - CAPACIDAD_BASE_CONVERTIBLE_TBX) * FACTOR_MMm3_A_UNIDAD_VOLUMEN
 
-
+# Destinos que son plantas: solo estas rutas area->destino se rutean via HUB.
+# Lo que va a gasoductos (VMN, VMS, Pampa SCH...) no se toca.
+PLANTAS_VIA_HUB = ("TTY", "MEGA", "TBX El Porton")
 
 
 # BOOL SAVE

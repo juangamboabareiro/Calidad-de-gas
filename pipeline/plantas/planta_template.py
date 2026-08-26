@@ -28,25 +28,34 @@ def _seleccionar_destino(tabla, nombre_planta, compuestos, origen_tabla):
 
     return seleccion
 
-
 def armar_input_planta(tabla_total_flujos_directos, tabla_total_yacimientos,
-                       nombre_planta, compuestos, matriz_inyecciones=None):
+                       nombre_planta, compuestos, matriz_inyecciones=None,
+                       tabla_total_hubs=None, mapa_area_hub=None):
     """Gas que ingresa a una planta: todas las filas cuyo destino es la planta.
 
-    Union de flujos_directos (origenes que son gasoductos) y yacimientos
-    (areas que inyectan directo). No hay doble conteo: el aporte de un area via
-    un gasoducto ya viene agregado dentro de la fila de ese gasoducto, con otro
-    valor de Gasoducto. Fortin de Piedra aparece como (fortindepiedra, MEGA) en
-    yacimientos, y su parte via YPF-RDM esta adentro de (ypfrdm, MEGA) en
-    flujos_directos. El filtro por destino toma cada cosa una sola vez.
+    Union de TRES fuentes:
+    - flujos_directos: origenes que son gasoductos.
+    - yacimientos: areas SIN hub que inyectan directo. Las areas con hub ya
+      no aparecen aca con destino planta: `calcular_ruteo_hubs` les saco esas
+      filas y las convirtio en filas de hub.
+    - hubs: gas que llega desde un HUB, con la croma del hub (premisa de
+      Cromas-HUBs o mezcla volumetrica de sus areas) y el reparto de
+      Detalles-HUBs.
 
-    La matriz se usa como VALIDACION, no como fuente: se verifico que para TTY,
-    MEGA y TBX El Porton su columna coincide exactamente con el conjunto de
-    Area con Gasoducto == destino (diferencia simetrica vacia en los tres).
+    No hay doble conteo: el aporte de un area via un gasoducto ya viene
+    agregado dentro de la fila de ese gasoducto, y el aporte via hub viene
+    en la fila del hub (la fila directa area->planta se elimino al rutear).
+
+    mapa_area_hub : dict | None
+        {area normalizada -> clave de hub} de las areas ruteadas. Se usa para
+        traducir la validacion contra la matriz de inyecciones: la matriz
+        declara AREAS como origen, pero en el pool esas areas aparecen ahora
+        como su hub.
     """
     partes = [
         _seleccionar_destino(tabla_total_flujos_directos, nombre_planta, compuestos, 'flujos_directos'),
         _seleccionar_destino(tabla_total_yacimientos, nombre_planta, compuestos, 'yacimientos'),
+        _seleccionar_destino(tabla_total_hubs, nombre_planta, compuestos, 'hubs'),
     ]
 
     entrada = pd.concat(partes, ignore_index=True)
@@ -61,6 +70,13 @@ def armar_input_planta(tabla_total_flujos_directos, tabla_total_yacimientos,
 
     if matriz_inyecciones is not None and nombre_planta in matriz_inyecciones.columns:
         esperados = set(matriz_inyecciones[nombre_planta].dropna().map(normalizar))
+
+        # La matriz declara areas; si un area fue ruteada, en el pool aparece
+        # como su hub. Se traduce para que la validacion siga siendo util y no
+        # reporte falsas diferencias tras el cambio de ruteo.
+        if mapa_area_hub:
+            esperados = {mapa_area_hub.get(a, a) for a in esperados}
+
         obtenidos = set(entrada['Area'].map(normalizar))
         faltan, sobran = sorted(esperados - obtenidos), sorted(obtenidos - esperados)
         if faltan or sobran:
@@ -70,6 +86,9 @@ def armar_input_planta(tabla_total_flujos_directos, tabla_total_yacimientos,
           f"{entrada['Volumen_inyectado'].sum():,.0f} de volumen")
 
     return entrada.reset_index(drop=True)
+
+
+
 
 def _fila_derivacion(derivacion, compuestos):
     """Convierte una derivacion (salida de calcular_DERIVACION) en una fila de
@@ -90,10 +109,10 @@ def _fila_derivacion(derivacion, compuestos):
 
     return fila
 
-
 def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_directos,
                propiedades, compuestos, retenidos_planta, nombre_planta,
-               derivaciones=None, tabla_total_yacimientos=None):
+               derivaciones=None, tabla_total_yacimientos=None,
+               tabla_total_hubs=None, mapa_area_hub=None):
     """Modela el POOL completo que llega a una planta.
 
     Devuelve el escenario de referencia: la mezcla (gas_rico_IN) y los retenidos
@@ -122,6 +141,8 @@ def io_plantas(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direct
         nombre_planta=nombre_planta,
         compuestos=compuestos,
         matriz_inyecciones=matriz_inyecciones,
+        tabla_total_hubs=tabla_total_hubs,
+        mapa_area_hub=mapa_area_hub,
     )
 
 

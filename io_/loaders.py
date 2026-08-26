@@ -131,6 +131,23 @@ def load_plantas_yacimientos(path, **kw):
     return _leer(path, "Plantas-Yacimientos", **kw)
 
 
+
+def load_cromas_hubs(path, **kw):
+    """
+    Hoja Cromas-HUBs: una fila por hub con la croma del gas que SALE del hub.
+
+    Es OPCIONAL: si la hoja no existe se devuelve None y el ruteo por hubs
+    cae a la mezcla volumetrica de las areas de cada hub (con aviso). Asi el
+    pipeline corre igual mientras la hoja se va cargando.
+    """
+    try:
+        return _leer(path, "Cromas-HUBs", **kw)
+    except ValueError:
+        print("[loaders] inputs sin hoja Cromas-HUBs: las cromas de hub "
+              "se calculan como mezcla volumetrica")
+        return None
+
+
 # --------------------------------------------------------------------------
 # Hojas sin columna Area
 # --------------------------------------------------------------------------
