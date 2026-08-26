@@ -70,6 +70,7 @@ from io_.loaders import (
     load_propiedades,
     load_plantas_yacimientos,
     load_matriz_inyecciones,
+    load_cromas_hubs,
 )
 from ui.esquemas import mostrar_esquema_planta
 from ui.mapa import panel_mapa
@@ -90,6 +91,7 @@ from pipeline.tabla_total import (
     calcular_tabla_total_flujos_directos,
     calcular_tabla_total_detalles_hubs,
 )
+from pipeline.hubs import calcular_ruteo_hubs
 from outputs.writers import guardar
 
 from ui.diagnosticos import capturar, mostrar as mostrar_diagnostico
@@ -275,6 +277,7 @@ def _kpi_origenes(datos: dict):
     etiquetas = {
         "flujos_directos": "Vía gasoducto",
         "yacimientos": "Inyección directa",
+        "hubs": "Vía HUB",
         "derivacion": "Traspaso de otra planta",
     }
 
@@ -589,7 +592,7 @@ PARAMS = {
 
 @st.cache_data(show_spinner=False)
 def _cargar_hojas(path, _firma):
-    """Las nueve lecturas del Excel, cacheadas juntas.
+    """Las diez lecturas del Excel, cacheadas juntas.
 
     `_firma` es (mtime, size) del archivo: entra solo para invalidar el cache si
     el excel cambia en disco. No se usa adentro.
@@ -611,6 +614,9 @@ def _cargar_hojas(path, _firma):
         "propiedades": load_propiedades(path),
         "plantas_yacimientos": load_plantas_yacimientos(path),
         "matriz_inyecciones": load_matriz_inyecciones(path),
+        # Opcional: None si el excel no tiene la hoja. El ruteo por hubs cae
+        # entonces a la mezcla volumetrica de las areas de cada hub.
+        "cromas_hubs": load_cromas_hubs(path),
     }
 
 
@@ -727,12 +733,43 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         tabla_total_detalles_hubs = calcular_propiedades_gas(
             tabla_total_detalles_hubs, propiedades, ctes.COMPUESTOS, ctes.PRESION_BASE,
             ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE, ctes.CONVERSION)
+
+        # --- Ruteo por HUB: area -> HUB -> planta --------------------------
+        # Las areas con HUB asignado no inyectan directo a las plantas: su gas
+        # entra al hub, que lo mezcla (croma de Cromas-HUBs, o mezcla
+        # volumetrica de sus areas si el hub no esta cargado) y lo deriva
+        # segun el reparto de los renglones-hub de Detalles-HUBs. Las rutas
+        # hacia gasoductos y las areas sin hub (HUB == "Otros") no se tocan.
+        #
+        # OJO: PISA tabla_total_yacimientos con la version ajustada (sin las
+        # rutas ruteadas). Todo lo de aca para abajo — comunes, red del mapa,
+        # tablas del panel, CSVs — tiene que ver esa version, por eso va aca
+        # y no despues.
+        tabla_total_yacimientos, tabla_total_hubs, info_hubs = calcular_ruteo_hubs(
+            tabla_total_yacimientos,
+            detalles_hubs_areas,          # la ANCHA, con columna HUB
+            ctes.COMPUESTOS,
+            plantas=params.get("PLANTAS_VIA_HUB",
+                               getattr(config, "PLANTAS_VIA_HUB",
+                                       ("TTY", "MEGA", "TBX El Porton"))),
+            cromas_hubs=hojas["cromas_hubs"],
+        )
+
+        # Propiedades fisicas tambien para las filas de hub, asi la tabla se
+        # ve completa en el panel (el modelado de plantas no las necesita).
+        if len(tabla_total_hubs):
+            tabla_total_hubs = calcular_propiedades_gas(
+                tabla_total_hubs, propiedades, ctes.COMPUESTOS, ctes.PRESION_BASE,
+                ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE, ctes.CONVERSION)
+
         status.update(label="Tablas totales listas ✅", state="complete")
 
     if guardar_csvs:
         guardar(tabla_total_yacimientos, "TBL_TTL_YCS.csv")
         guardar(tabla_total_flujos_directos, "TBL_TTL_DTOS.csv")
         guardar(tabla_total_detalles_hubs, "TBL_TTL_DH.csv")
+        if len(tabla_total_hubs):
+            guardar(tabla_total_hubs, "TBL_TTL_HUBS.csv")
 
     with _status("Resolviendo la cascada de plantas...", silencioso) as status:
         retenidos_TTY_DP = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "Dew point"]
@@ -747,11 +784,19 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         # `tabla_total_yacimientos` hace falta para MEGA y TBX El Porton, cuyos
         # origenes incluyen areas que inyectan directo a la planta. TTY no la
         # necesita (VMN y VMS son gasoductos) pero pasarla no cambia nada.
+        #
+        # `tabla_total_yacimientos` ya viene AJUSTADA por el ruteo de hubs:
+        # sin las rutas area->planta de las areas con hub. Esas entran ahora
+        # por `tabla_total_hubs`, con la croma del hub. `mapa_area_hub`
+        # traduce la validacion contra la matriz de inyecciones, que declara
+        # areas como origen pero en el pool aparecen como su hub.
         comunes = dict(
             matriz_inyecciones=hojas["matriz_inyecciones"],
             calcular_retenidos=calcular_retenidos,
             tabla_total_flujos_directos=tabla_total_flujos_directos,
             tabla_total_yacimientos=tabla_total_yacimientos,
+            tabla_total_hubs=tabla_total_hubs,
+            mapa_area_hub=info_hubs["mapa_area_hub"],
             propiedades=propiedades,
             COMPUESTOS=ctes.COMPUESTOS,
         )
@@ -814,14 +859,17 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
     # habia ninguna arista con destino "tty" de donde inferirle una posicion.
     # MEGA si aparecia, porque tiene areas que le inyectan directo.
     #
-    # No hay doble conteo: yacimientos aporta area -> gasoducto y flujos
-    # directos aporta gasoducto -> destino. Son tramos distintos de la cadena.
+    # No hay doble conteo: yacimientos aporta area -> gasoducto, flujos
+    # directos aporta gasoducto -> destino y hubs aporta hub -> planta. Son
+    # tramos distintos de la cadena; en la tabla de hubs Area ES el hub, asi
+    # que la arista sale con el nombre del hub como origen.
     _COLS_RED = ["Area", "Gasoducto", "Volumen_inyectado"]
 
     _tramos = [
         tabla[_COLS_RED]
-        for tabla in (tabla_total_yacimientos, tabla_total_flujos_directos)
-        if set(_COLS_RED).issubset(tabla.columns)
+        for tabla in (tabla_total_yacimientos, tabla_total_flujos_directos,
+                      tabla_total_hubs)
+        if tabla is not None and set(_COLS_RED).issubset(tabla.columns)
     ]
 
     if _tramos:
@@ -860,6 +908,7 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
             "Total Yacimientos": tabla_total_yacimientos,
             "Total Flujos Directos": tabla_total_flujos_directos,
             "Total Detalles HUBs": tabla_total_detalles_hubs,
+            "Total HUBs (ruteo)": tabla_total_hubs,
         },
         "plantas": plantas,
         "flujos_plantas": flujos_plantas,
@@ -867,9 +916,14 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         "tbx_en_servicio": tbx_activa,
         "red_gasoductos": red_gasoductos,
 
-        # Para el tab "Plantas (sandbox)". `comunes` son los mismos seis inputs
-        # que ya reciben modelar_TTY y modelar_MEGA; `retenidos_rtp` es para
-        # sembrar la retencion de las tres plantas base.
+        # Informe del ruteo por hubs: hubs ruteados / sin reparto, mapa
+        # area->hub y volumen movido. Lo consume quien quiera (mapa, expander).
+        "info_hubs": info_hubs,
+
+        # Para el tab "Plantas (sandbox)". `comunes` son los mismos inputs
+        # que ya reciben modelar_TTY y modelar_MEGA (incluida la tabla de hubs
+        # y el mapa area->hub); `retenidos_rtp` es para sembrar la retencion
+        # de las tres plantas base.
         "comunes": comunes,
         "retenidos_rtp": retenidos_rtp,
     }
