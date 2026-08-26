@@ -71,7 +71,7 @@ RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 # una capa por grupo, y el costo de render no lo justifica: son varias
 # GeoJsonLayer serializandose por separado en cada rerun. El desglose por
 # empresa vive ahora en la tabla de abajo del mapa, que no cuesta nada.
-VERSION = "2026-08-24c · sin completar_gasoductos (TTY visible)"
+VERSION = "2026-08-24d · sandbox: agregados en verde, eliminados en rojo"
 
 COLOR_DUCTOS = [120, 135, 150, 200]
 ANCHO_DUCTOS = 1.2
@@ -82,6 +82,12 @@ COLOR_SIN_DATO = [170, 170, 175, 150]
 # sandbox la clave no existe y el mapa se comporta exactamente como siempre:
 # ni siquiera dibuja el control.
 CLAVE_RED_SANDBOX = "sandbox_red_gasoductos"
+
+# Estado de cada arista al comparar la red oficial con la del sandbox.
+# Los eliminados NO se sacan del mapa: se repintan. El esquema general tiene que
+# quedar fijo para poder leer QUE cambio, y un flujo que desaparece no se ve.
+COLOR_AGREGADO = [0, 190, 120, 230]
+COLOR_ELIMINADO = [200, 60, 70, 150]
 
 
 # ===========================================================================
@@ -416,10 +422,27 @@ def preparar_flujos(edges: pd.DataFrame, nodos: pd.DataFrame):
 
     flujos["color"] = flujos["valor"].map(_color)
 
+    # El estado del sandbox pisa el degradado por volumen: para leer que se
+    # agrego y que se saco, el color tiene que significar eso y no el caudal.
+    if "estado" in flujos.columns:
+        flujos.loc[flujos["estado"] == "agregado", "color"] = \
+            flujos.loc[flujos["estado"] == "agregado"].apply(
+                lambda _: list(COLOR_AGREGADO), axis=1)
+        flujos.loc[flujos["estado"] == "eliminado", "color"] = \
+            flujos.loc[flujos["estado"] == "eliminado"].apply(
+                lambda _: list(COLOR_ELIMINADO), axis=1)
+
+    _marca = {"agregado": "  ·  AGREGADO en sandbox",
+              "eliminado": "  ·  ELIMINADO en sandbox"}
+
     flujos["detalle"] = (
         flujos["origen"].astype(str) + " → " + flujos["destino"].astype(str)
         + "  ·  " + flujos["valor"].map(lambda v: f"{v:,.0f}")
     )
+
+    if "estado" in flujos.columns:
+        flujos["detalle"] = (
+            flujos["detalle"] + flujos["estado"].map(_marca).fillna(""))
 
     return flujos, faltantes
 
@@ -552,12 +575,90 @@ def _ayuda_sin_datos(que: str):
     )
 
 
-def _elegir_red(resultados):
-    """Red oficial, o la del sandbox si interviniste algun ducto.
+def combinar_redes(oficial, sandbox) -> pd.DataFrame:
+    """
+    Une la red oficial con la del sandbox y marca el estado de cada arista.
 
-    No hay que darle coordenadas al ducto nuevo: `inferir_posiciones` lo ubica
-    en el centroide de sus origenes ponderado por volumen, igual que a
-    cualquier otro. Un ducto nuevo entra por el mismo camino que VMN.
+    estado
+    ------
+    base        en las dos. Se usa el volumen del sandbox, que es el vigente.
+    agregado    solo en el sandbox: un ducto o una ruta que inventaste.
+    eliminado   solo en la oficial: la sacaste en el sandbox.
+
+    Los eliminados se conservan a proposito. Si se filtraran, el mapa mostraria
+    una red mas chica y no habria forma de ver que se saco: un flujo ausente es
+    invisible. Repintados en rojo, el esquema general queda fijo y el cambio se
+    lee de un golpe.
+    """
+    def _clavear(df):
+        if df is None or not len(df):
+            return pd.DataFrame(columns=["origen", "destino", "valor", "_k"])
+        salida = df.copy()
+        salida["valor"] = pd.to_numeric(salida["valor"], errors="coerce").fillna(0)
+        salida["_k"] = (clave_cruce(salida["origen"]) + "|"
+                        + clave_cruce(salida["destino"]))
+        return salida
+
+    ofi, sbx = _clavear(oficial), _clavear(sandbox)
+
+    claves_ofi, claves_sbx = set(ofi["_k"]), set(sbx["_k"])
+
+    base = sbx[sbx["_k"].isin(claves_ofi)].assign(estado="base")
+    agregados = sbx[~sbx["_k"].isin(claves_ofi)].assign(estado="agregado")
+    eliminados = ofi[~ofi["_k"].isin(claves_sbx)].assign(estado="eliminado")
+
+    union = pd.concat([base, agregados, eliminados], ignore_index=True)
+
+    return union.drop(columns="_k")
+
+
+def agregar_nodos_faltantes(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFrame:
+    """
+    Da de alta los nodos que aparecen en las aristas y no estan en el CSV.
+
+    Es lo que hace que un ducto inventado en el sandbox llegue al mapa.
+    `inferir_posiciones` recorre los NODOS, no las aristas: si el nombre no
+    figura en `geo_nodos.csv` no existe para el mapa, y su flujo no se dibuja
+    aunque la arista este ahi.
+
+    El tipo se asume gasoducto: es lo que se agrega desde el sandbox, y ademas
+    es el tipo que se ubica por inferencia sin pedirle coordenadas a nadie.
+    """
+    if edges is None or not len(edges):
+        return nodos
+
+    conocidos = set(nodos["clave"])
+
+    nombres = {}
+    for col in ("origen", "destino"):
+        for nombre in edges[col].dropna().astype(str):
+            nombres.setdefault(_clave_de(nombre), nombre)
+
+    nuevos = [
+        {"nombre": nombre, "tipo": "gasoducto", "lat": None, "lon": None,
+         "clave": clave, "fuente": "sandbox"}
+        for clave, nombre in nombres.items() if clave not in conocidos
+    ]
+
+    if not nuevos:
+        return nodos
+
+    print(f"[mapa] {len(nuevos)} nodos nuevos desde las aristas: "
+          f"{[n['nombre'] for n in nuevos]}")
+
+    return pd.concat([nodos, pd.DataFrame(nuevos)], ignore_index=True)
+
+
+def _clave_de(texto: str) -> str:
+    return clave_cruce(pd.Series([texto])).iloc[0]
+
+
+def _elegir_red(resultados):
+    """Red del mapa: la oficial, o la union oficial+sandbox si intervino algo.
+
+    No hay que darle coordenadas al ducto nuevo: `agregar_nodos_faltantes` lo da
+    de alta y `inferir_posiciones` lo ubica en el centroide de sus origenes
+    ponderado por volumen, igual que a cualquier otro.
 
     Si nunca corriste el sandbox, la clave no existe en `session_state` y esto
     devuelve la red oficial sin dibujar ningun control.
@@ -566,34 +667,36 @@ def _elegir_red(resultados):
     sandbox = st.session_state.get(CLAVE_RED_SANDBOX)
 
     if sandbox is None or len(sandbox) == 0:
-        return oficial
+        if oficial is None:
+            return None
+        return oficial.assign(estado="base")
 
-    if oficial is not None and "destino" in oficial.columns:
-        destinos_of = set(oficial["destino"].astype(str))
-        destinos_sb = set(sandbox["destino"].astype(str))
-        nuevos = sorted(destinos_sb - destinos_of)
-        faltan = sorted(destinos_of - destinos_sb)
-    else:
-        nuevos, faltan = [], []
+    union = combinar_redes(oficial, sandbox)
+
+    conteo = union["estado"].value_counts()
+    agregados = int(conteo.get("agregado", 0))
+    eliminados = int(conteo.get("eliminado", 0))
 
     usar = st.checkbox(
-        "Ver la red del sandbox", value=bool(nuevos or faltan),
-        help="Dibuja la red con los ductos que agregaste o sacaste en el tab "
-             "Plantas (sandbox), en vez de la de la corrida oficial.")
+        "Ver los cambios del sandbox", value=bool(agregados or eliminados),
+        help="Superpone la red del tab Plantas (sandbox) sobre la oficial. "
+             "Lo agregado va en verde, lo eliminado en rojo. Nada se saca del "
+             "esquema: se repinta.")
 
     if not usar:
-        return oficial
+        return oficial.assign(estado="base") if oficial is not None else None
 
-    detalle = []
-    if nuevos:
-        detalle.append(f"**+{len(nuevos)}**: {', '.join(nuevos[:3])}")
-    if faltan:
-        detalle.append(f"**−{len(faltan)}**: {', '.join(faltan[:3])}")
+    if agregados or eliminados:
+        partes = []
+        if agregados:
+            partes.append(f"**{agregados}** agregada(s)")
+        if eliminados:
+            partes.append(f"**{eliminados}** eliminada(s)")
+        st.caption("Sandbox: " + " · ".join(partes))
+    else:
+        st.caption("Sandbox: mismas rutas, volúmenes redistribuidos.")
 
-    st.caption("Red del sandbox — " + (" · ".join(detalle) if detalle
-               else "mismos destinos, volúmenes redistribuidos."))
-
-    return sandbox
+    return union
 
 
 def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
@@ -616,6 +719,10 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
     if nodos.empty:
         _ayuda_sin_datos(str(ruta_nodos))
         return
+
+    # Un ducto inventado en el sandbox no esta en geo_nodos.csv, y sin nodo su
+    # arista no se dibuja. Se lo da de alta desde las propias aristas.
+    nodos = agregar_nodos_faltantes(nodos, edges)
 
     # Los gasoductos y las plantas no tienen coordenada propia: los ubica
     # `inferir_posiciones`, que ademas abanica los que caen en el mismo punto.
@@ -759,6 +866,20 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
                 "normalizado, así que no hace falta que coincida exacto."
             )
             st.code("\n".join(faltantes), language="text")
+
+    if "estado" in flujos.columns and set(flujos["estado"]) - {"base"}:
+        st.markdown(
+            '<div style="margin:-6px 0 10px 0;font-size:0.82rem;color:#444;">'
+            '<span style="display:inline-block;width:22px;height:4px;'
+            f'background:rgb({COLOR_AGREGADO[0]},{COLOR_AGREGADO[1]},{COLOR_AGREGADO[2]});'
+            'vertical-align:middle;margin-right:6px;border-radius:2px;"></span>'
+            'agregado en sandbox'
+            '<span style="display:inline-block;width:22px;height:4px;'
+            f'background:rgb({COLOR_ELIMINADO[0]},{COLOR_ELIMINADO[1]},{COLOR_ELIMINADO[2]});'
+            'vertical-align:middle;margin:0 6px 0 20px;border-radius:2px;"></span>'
+            'eliminado en sandbox (se conserva en el esquema)</div>',
+            unsafe_allow_html=True,
+        )
 
     st.caption(
         "El grosor de la línea va con la raíz del volumen inyectado, no con el "
