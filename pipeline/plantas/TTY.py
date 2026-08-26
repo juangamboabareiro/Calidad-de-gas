@@ -74,7 +74,8 @@ def modelar_TTY(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direc
                 propiedades, COMPUESTOS, retenidos_TTY, CAPACIDAD_EVACUACION_TTY,
                 vol_disponible=None, MAX_DERIVACION_PLANTA_A_PLANTA=0.0,
                 CAPACIDAD_TTY=None, derivaciones=None, activa=True,
-                tabla_total_yacimientos=None):
+                tabla_total_yacimientos=None,
+                tabla_total_hubs=None, mapa_area_hub=None):
     """Modela un tren TTY (Dew Point o TBX) como eslabon de la cascada.
 
     LOGICA
@@ -106,6 +107,8 @@ def modelar_TTY(matriz_inyecciones, calcular_retenidos, tabla_total_flujos_direc
         calcular_retenidos=calcular_retenidos,
         tabla_total_flujos_directos=tabla_total_flujos_directos,
         tabla_total_yacimientos=tabla_total_yacimientos,   # nuevo
+        tabla_total_hubs=tabla_total_hubs,                 # gas via HUB
+        mapa_area_hub=mapa_area_hub,
         propiedades=propiedades,
         compuestos=COMPUESTOS,
         retenidos_planta=retenidos_TTY,

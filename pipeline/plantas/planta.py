@@ -82,7 +82,8 @@ def modelar_planta(planta, comunes, vol_disponible=None, derivaciones=None):
     comunes : dict
         El mismo que ya se arma en main.py / app.py: matriz_inyecciones,
         calcular_retenidos, tabla_total_flujos_directos,
-        tabla_total_yacimientos, propiedades, COMPUESTOS.
+        tabla_total_yacimientos, tabla_total_hubs, mapa_area_hub,
+        propiedades, COMPUESTOS. Las claves de hubs son opcionales.
     vol_disponible : float | None
         Gas que llega a esta planta. None = todo su pool. Lo pasa la cascada
         para las plantas que reciben el volumen de otro tren sobre el mismo gas
@@ -106,6 +107,10 @@ def modelar_planta(planta, comunes, vol_disponible=None, derivaciones=None):
         calcular_retenidos=comunes["calcular_retenidos"],
         tabla_total_flujos_directos=comunes["tabla_total_flujos_directos"],
         tabla_total_yacimientos=comunes.get("tabla_total_yacimientos"),
+        # `.get` y no acceso directo: los tests del tab arman `comunes` a mano
+        # sin estas claves y no tienen por que conocerlas.
+        tabla_total_hubs=comunes.get("tabla_total_hubs"),
+        mapa_area_hub=comunes.get("mapa_area_hub"),
         propiedades=comunes["propiedades"],
         compuestos=compuestos,
         retenidos_planta=planta.retenidos,
