@@ -107,6 +107,12 @@ def _match_croma_hub(cromas_hubs, etiqueta_hub, compuestos):
     croma = pd.to_numeric(croma, errors="coerce").fillna(0.0)
 
     suma = float(croma.sum())
+    if suma < 0.5:
+        # Fila a medio llenar (o vacia) en la hoja: tomarla seria inyectar un
+        # gas de ceros. Se ignora y el hub cae a la mezcla volumetrica.
+        print(f"[ruteo_hubs] croma de '{etiqueta_hub}' en Cromas-HUBs suma "
+              f"{suma:.4f} (fila incompleta): se ignora y se usa la mezcla")
+        return None
     if not (0.98 <= suma <= 1.02):
         print(f"[ruteo_hubs] OJO croma de '{etiqueta_hub}' en Cromas-HUBs suma "
               f"{suma:.4f} (deberia ser ~1)")
@@ -278,11 +284,28 @@ def calcular_ruteo_hubs(
     for hub in hubs:
         filas_areas = candidatas[candidatas[COL_HUB] == hub]
 
-        if hub not in repartos:
-            informe["hubs_sin_reparto"].append(hub)
-            print(f"[ruteo_hubs] '{hub}' sin reparto en Detalles-HUBs: sus "
-                  f"{len(filas_areas)} rutas area->planta quedan directas (como antes)")
-            continue
+        reparto = repartos.get(hub)
+
+        if reparto is None:
+            # Sin renglon en Detalles-HUBs. Si TODAS las rutas del hub van a
+            # una sola planta, el reparto es 100% por construccion y no hace
+            # falta hoja: se rutea igual (lo que importa ahi es la croma del
+            # hub, no la fraccion). Con mas de un destino si se necesita el
+            # renglon, porque el reparto es una decision del hub que este
+            # modulo no puede inventar.
+            destinos = filas_areas[COL_GASODUCTO].map(normalizar).unique()
+            if len(destinos) == 1:
+                destino_original = filas_areas[COL_GASODUCTO].iloc[0]
+                reparto = pd.Series({destino_original: 1.0})
+                print(f"[ruteo_hubs] '{hub}' sin renglon en Detalles-HUBs pero "
+                      f"con un solo destino ({destino_original}): reparto "
+                      "trivial 100%")
+            else:
+                informe["hubs_sin_reparto"].append(hub)
+                print(f"[ruteo_hubs] '{hub}' sin reparto en Detalles-HUBs y con "
+                      f"{len(destinos)} destinos: sus {len(filas_areas)} rutas "
+                      "area->planta quedan directas (como antes)")
+                continue
 
         volumen_hub = float(filas_areas[COL_VOL_INY].sum())
 
@@ -303,7 +326,7 @@ def calcular_ruteo_hubs(
         clave_hub = normalizar(f"hub {hub}") if not normalizar(hub).startswith("hub") \
             else normalizar(hub)
 
-        for planta, fraccion in repartos[hub].items():
+        for planta, fraccion in reparto.items():
             fila = {
                 COL_AREA: clave_hub,
                 COL_HUB: hub,
@@ -323,7 +346,7 @@ def calcular_ruteo_hubs(
         for area in filas_areas[COL_AREA].map(normalizar).unique():
             informe["mapa_area_hub"][area] = clave_hub
 
-        destinos = ", ".join(f"{p} {f:.0%}" for p, f in repartos[hub].items())
+        destinos = ", ".join(f"{p} {f:.0%}" for p, f in reparto.items())
         print(f"[ruteo_hubs] '{hub}': {len(filas_areas)} areas, "
               f"{volumen_hub:,.0f} de volumen -> {destinos}")
 
