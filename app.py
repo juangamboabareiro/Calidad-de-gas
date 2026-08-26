@@ -488,10 +488,61 @@ with st.sidebar.form("parametros", **_form_kwargs):
         st.error("Formato inválido, se usa el default de config.")
         periodo_ts = config.PERIODO_CONSIDERADO
 
+    # ------------------------------------------------------------------
+    # Módulos de planta: la PM (obligatoria) y las ampliaciones (opcionales,
+    # tantas filas como se quiera: el editor agrega renglones a demanda).
+    # Cada ampliación entra en vigencia cuando su fecha <= período de la
+    # corrida, así que en la serie temporal se prenden solas mes a mes.
+    # Los Δ son SOBRE las capacidades base de las secciones 5-7.
+    # ------------------------------------------------------------------
+    _COLS_AMP = {
+        "Fecha (MM-YYYY)": st.column_config.TextColumn(
+            "Fecha (MM-YYYY)", help="Vigente desde este mes inclusive."),
+        "Δ Evacuación [tn/d]": st.column_config.NumberColumn(
+            "Δ Evacuación [tn/d]", default=0.0, step=50.0,
+            help="Se SUMA a la capacidad de evacuación base."),
+        "Δ Ingreso [MMm3/d]": st.column_config.NumberColumn(
+            "Δ Ingreso [MMm3/d]", default=0.0, step=0.5,
+            help="Se SUMA a la capacidad de ingreso base."),
+    }
+
+    def _parsear_ampliaciones(df, etiqueta, con_tren=False):
+        """data_editor -> lista de dicts ya en unidades del modelo.
+
+        Filas sin fecha o con ambos Δ en cero se ignoran en silencio (son
+        renglones a medio cargar). Fechas mal formateadas avisan y se saltean:
+        mejor correr sin esa ampliación que abortar el submit entero.
+        """
+        ampliaciones = []
+        if df is None:
+            return ampliaciones
+        for _, fila in df.fillna({"Δ Evacuación [tn/d]": 0.0,
+                                  "Δ Ingreso [MMm3/d]": 0.0}).iterrows():
+            fecha_cruda = str(fila.get("Fecha (MM-YYYY)") or "").strip()
+            d_evac = float(fila.get("Δ Evacuación [tn/d]") or 0.0)
+            d_ing_mm = float(fila.get("Δ Ingreso [MMm3/d]") or 0.0)
+            if not fecha_cruda and d_evac == 0.0 and d_ing_mm == 0.0:
+                continue
+            try:
+                fecha = pd.Timestamp(fecha_cruda.replace("/", "-"))
+            except Exception:
+                st.warning(f"{etiqueta}: fecha inválida '{fecha_cruda}', "
+                           "esa ampliación se ignora.")
+                continue
+            amp = {"fecha": fecha, "d_evac": d_evac,
+                   "d_ingreso": d_ing_mm * FACTOR_MM}
+            if con_tren:
+                amp["tren"] = str(fila.get("Tren") or "TBX")
+                amp["convertible"] = bool(fila.get("Convertible desde DP") or False)
+            ampliaciones.append(amp)
+        return sorted(ampliaciones, key=lambda a: a["fecha"])
+
+    st.header("3. Módulo TTY")
     fecha_pm_str = st.text_input(
         "Fecha PM TTY-TBX (MM-YYYY)",
         value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
-        help="Antes de esta fecha TTY-TBX no está en servicio y todo el pool va a TTY-DP.",
+        help="Obligatoria. Antes de esta fecha TTY-TBX no está en servicio y "
+             "todo el pool va a TTY-DP.",
     )
     try:
         fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
@@ -505,8 +556,45 @@ with st.sidebar.form("parametros", **_form_kwargs):
     else:
         st.info("TTY-TBX **fuera de servicio**: el pool va directo a TTY-DP.")
 
-    st.header("3. Evacuación de LGN (tn/d)")
-    st.caption("Restricción activa: define cuánto gas puede tratar cada planta.")
+    st.caption("Ampliaciones (opcionales, agregá tantas filas como quieras):")
+    _amp_tty_df = st.data_editor(
+        pd.DataFrame(columns=["Fecha (MM-YYYY)", "Tren", "Δ Evacuación [tn/d]",
+                              "Δ Ingreso [MMm3/d]", "Convertible desde DP"]),
+        num_rows="dynamic",
+        key="amp_tty",
+        use_container_width=True,
+        column_config={
+            **_COLS_AMP,
+            "Tren": st.column_config.SelectboxColumn(
+                "Tren", options=["TBX", "DP"], default="TBX", required=True),
+            "Convertible desde DP": st.column_config.CheckboxColumn(
+                "Convertible desde DP", default=False,
+                help="Solo tiene efecto en ampliaciones del tren TBX: los Δ se "
+                     "RESTAN de TTY-DP (capacidad que se convierte de DP a TBX, "
+                     "no capacidad nueva)."),
+        },
+    )
+    ampliaciones_tty = _parsear_ampliaciones(_amp_tty_df, "Módulo TTY", con_tren=True)
+
+    st.header("4. Módulo MEGA")
+    st.caption("Ampliaciones (opcionales):")
+    _amp_mega_df = st.data_editor(
+        pd.DataFrame(columns=["Fecha (MM-YYYY)", "Δ Evacuación [tn/d]",
+                              "Δ Ingreso [MMm3/d]"]),
+        num_rows="dynamic",
+        key="amp_mega",
+        use_container_width=True,
+        column_config=_COLS_AMP,
+    )
+    ampliaciones_mega = _parsear_ampliaciones(_amp_mega_df, "Módulo MEGA")
+
+    _vigentes = sum(a["fecha"] <= periodo_ts for a in ampliaciones_tty + ampliaciones_mega)
+    if ampliaciones_tty or ampliaciones_mega:
+        st.caption(f"{len(ampliaciones_tty) + len(ampliaciones_mega)} ampliación(es) "
+                   f"cargadas, {_vigentes} vigente(s) al período considerado.")
+
+    st.header("5. Evacuación de LGN (tn/d)")
+    st.caption("Restricción activa: define cuánto gas puede tratar cada planta. Son las capacidades BASE; las ampliaciones de los módulos suman encima.")
     evac_tty_tbx = st.number_input(
         "TTY-TBX", value=float(config.CAPACIDAD_EVACUACION_TTY_TBX), step=100.0)
     evac_tty_dp = st.number_input(
@@ -514,7 +602,7 @@ with st.sidebar.form("parametros", **_form_kwargs):
     evac_mega = st.number_input(
         "MEGA", value=float(config.CAPACIDAD_EVACUACION_MEGA), step=100.0)
 
-    st.header("4. Traspasos máximos (MMm3/d)")
+    st.header("6. Traspasos máximos (MMm3/d)")
     max_deriv_tbx_dp_mm = st.number_input(
         "TTY-TBX → TTY-DP",
         value=float(config.MAX_DERIVACION_TTY_TBX_A_TTY_DP) / FACTOR_MM, step=0.5,
@@ -524,7 +612,7 @@ with st.sidebar.form("parametros", **_form_kwargs):
         value=float(config.MAX_DERIVACION_TTY_DP_A_MEGA) / FACTOR_MM, step=0.5,
         help="Lo que exceda este tope es bypass de TTY-DP.")
 
-    with st.expander("5. Capacidad de ingreso de gas (MMm3/d)"):
+    with st.expander("7. Capacidad de ingreso de gas (MMm3/d)"):
         st.caption("Rara vez limita: entra solo como tope adicional junto a la evacuación.")
         cap_tty_tbx_mm = st.number_input(
             "TTY-TBX", value=float(config.CAPACIDAD_TTY_TBX) / FACTOR_MM, step=1.0)
@@ -533,17 +621,18 @@ with st.sidebar.form("parametros", **_form_kwargs):
         cap_mega_mm = st.number_input(
             "MEGA", value=float(config.CAPACIDAD_MEGA) / FACTOR_MM, step=1.0)
 
-    st.header("6. Salidas")
+    st.header("8. Salidas")
     guardar_csvs = st.checkbox("Guardar CSVs en disco al ejecutar", value=False)
 
     run = st.form_submit_button(
         "▶️ Ejecutar pipeline", type="primary", use_container_width=True)
 
-    st.header("7. Serie temporal")
+    st.header("9. Serie temporal")
     st.caption(
         "Alimenta el tab **Graphs**. Corre el pipeline una vez por mes del rango "
-        "con los mismos parámetros de capacidad de arriba, así que un rango largo "
-        "tarda: son N corridas completas."
+        "con las capacidades base de arriba; las ampliaciones de los módulos se "
+        "prenden solas en el mes que les corresponde. Un rango largo tarda: son "
+        "N corridas completas."
     )
     serie_desde_str = st.text_input(
         "Desde (MM-YYYY)",
@@ -583,6 +672,11 @@ PARAMS = {
     "CAPACIDAD_EVACUACION_MEGA": evac_mega,
     "MAX_DERIVACION_TTY_TBX_A_TTY_DP": max_deriv_tbx_dp_mm * FACTOR_MM,
     "MAX_DERIVACION_TTY_DP_A_MEGA": max_deriv_dp_mega_mm * FACTOR_MM,
+    # Listas de largo libre: cada dict es {fecha, d_evac, d_ingreso} y en TTY
+    # ademas {tren, convertible}. Se resuelven POR PERIODO adentro de
+    # ejecutar_pipeline, asi la serie temporal las prende mes a mes.
+    "AMPLIACIONES_TTY": ampliaciones_tty,
+    "AMPLIACIONES_MEGA": ampliaciones_mega,
 }
 
 
@@ -630,7 +724,70 @@ def _firma_archivo(path):
         return None
 
 
+def _aplicar_ampliaciones(params: dict) -> dict:
+    """Capacidades EFECTIVAS al período: base + ampliaciones ya vigentes.
+
+    Devuelve una COPIA de params: el dict original (PARAMS) se reusa en las N
+    corridas de la serie temporal y cada mes tiene que arrancar de las bases.
+
+    Reglas:
+    - Una ampliación rige desde su fecha inclusive (fecha <= período).
+    - TTY distingue tren. Si una ampliación de TBX está marcada `convertible`,
+      sus Δ se RESTAN de TTY-DP: es capacidad que se convierte de un tren al
+      otro, no capacidad nueva del sistema.
+    - Nada queda negativo: si las conversiones exceden la capacidad de DP, se
+      recorta a cero con aviso (el aviso sale en el panel de diagnósticos).
+    """
+    p = dict(params)
+    periodo = p["PERIODO_CONSIDERADO"]
+
+    aplicadas = []
+
+    for a in p.get("AMPLIACIONES_MEGA", []):
+        if a["fecha"] > periodo:
+            continue
+        p["CAPACIDAD_EVACUACION_MEGA"] += a["d_evac"]
+        p["CAPACIDAD_MEGA"] += a["d_ingreso"]
+        aplicadas.append(f"MEGA {a['fecha']:%m-%Y}")
+
+    for a in p.get("AMPLIACIONES_TTY", []):
+        if a["fecha"] > periodo:
+            continue
+        if a.get("tren", "TBX") == "TBX":
+            p["CAPACIDAD_EVACUACION_TTY_TBX"] += a["d_evac"]
+            p["CAPACIDAD_TTY_TBX"] += a["d_ingreso"]
+            if a.get("convertible"):
+                p["CAPACIDAD_EVACUACION_TTY_DP"] -= a["d_evac"]
+                p["CAPACIDAD_TTY_DP"] -= a["d_ingreso"]
+                aplicadas.append(f"TTY-TBX {a['fecha']:%m-%Y} (convertida desde DP)")
+            else:
+                aplicadas.append(f"TTY-TBX {a['fecha']:%m-%Y}")
+        else:
+            p["CAPACIDAD_EVACUACION_TTY_DP"] += a["d_evac"]
+            p["CAPACIDAD_TTY_DP"] += a["d_ingreso"]
+            aplicadas.append(f"TTY-DP {a['fecha']:%m-%Y}")
+
+    for clave in ("CAPACIDAD_EVACUACION_TTY_TBX", "CAPACIDAD_EVACUACION_TTY_DP",
+                  "CAPACIDAD_EVACUACION_MEGA", "CAPACIDAD_TTY_TBX",
+                  "CAPACIDAD_TTY_DP", "CAPACIDAD_MEGA"):
+        if p[clave] < 0:
+            print(f"[ampliaciones] OJO {clave} quedó negativa "
+                  f"({p[clave]:,.1f}) tras las conversiones: se recorta a 0")
+            p[clave] = 0.0
+
+    if aplicadas:
+        print(f"[ampliaciones] vigentes al {periodo:%m-%Y}: {', '.join(aplicadas)}")
+
+    return p
+
+
 def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
+    # Las ampliaciones se resuelven ANTES de recargar config: el sandbox
+    # siembra su registro de plantas desde config, y si config quedara con las
+    # capacidades base mientras la cascada usa las efectivas, el control del
+    # tab "Plantas" daría desvío sin haber bug.
+    params = _aplicar_ampliaciones(params)
+
     mods = _actualizar_config_y_recargar(path, params)
     ctes = mods["ctes_gas"]
     preprocesar_inputs = mods["preprocesamiento"].preprocesar_inputs
@@ -926,6 +1083,12 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         # de las tres plantas base.
         "comunes": comunes,
         "retenidos_rtp": retenidos_rtp,
+
+        # Parametros YA con las ampliaciones vigentes aplicadas. El tab
+        # sandbox siembra su registro con esto y no con PARAMS crudos: si
+        # usara las bases mientras la cascada corrio con las efectivas, el
+        # control daria desvio sin haber bug.
+        "params_efectivos": params,
     }
 
 
@@ -1172,7 +1335,7 @@ with tab_red:
     panel_mapa(resultados)
 
 with tab_sandbox:
-    panel_tab_plantas(resultados, PARAMS, FACTOR_MM)
+    panel_tab_plantas(resultados, resultados.get("params_efectivos", PARAMS), FACTOR_MM)
 
 
 def _mostrar_planta(tab, nombre_planta, datos):
