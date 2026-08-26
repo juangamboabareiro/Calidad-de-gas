@@ -45,16 +45,31 @@ despues se reparte el `sobrante` que devuelve. Es exacto, no una aproximacion:
 reparta lo que sobro; `retenidos` se escala sobre `vol_asignado`, tampoco.
 """
 
-from pipeline.plantas.planta_template import io_plantas
-from pipeline.plantas.flujo_plantas import (
-    calcular_lgn_unitario,
-    calcular_volumen_maximo,
-    repartir_flujo_planta,
-)
 from pipeline.plantas.reparto_proporcional import repartir_entre_destinos
 
 
 INFINITO = float("inf")
+
+
+def _dependencias():
+    """Importa `io_plantas` y los helpers de flujo EN CADA LLAMADA, a proposito.
+
+    `app.py` hace `importlib.reload` de `planta_template`, `flujo_plantas` y
+    `ctes_gas` cada vez que el usuario cambia un parametro de la sidebar
+    (`_actualizar_config_y_recargar`). Con un `from ... import x` arriba del
+    archivo, este modulo se quedaria con la version del PRIMER import y podria
+    seguir usando constantes viejas despues de un reload.
+
+    El costo es un lookup por llamada, contra el riesgo de mostrar numeros de
+    una configuracion que el usuario ya cambio. No hay comparacion.
+    """
+    from pipeline.plantas.planta_template import io_plantas
+    from pipeline.plantas.flujo_plantas import (
+        calcular_lgn_unitario,
+        calcular_volumen_maximo,
+        repartir_flujo_planta,
+    )
+    return io_plantas, calcular_lgn_unitario, calcular_volumen_maximo, repartir_flujo_planta
 
 
 def modelar_planta(planta, comunes, vol_disponible=None, derivaciones=None):
@@ -75,6 +90,9 @@ def modelar_planta(planta, comunes, vol_disponible=None, derivaciones=None):
     derivaciones : list[dict] | None
         Gas que llega con OTRA composicion y tiene que pesar en la mezcla.
     """
+
+    io_plantas, calcular_lgn_unitario, calcular_volumen_maximo, repartir_flujo_planta = (
+        _dependencias())
 
     compuestos = comunes["COMPUESTOS"]
 
