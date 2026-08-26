@@ -51,6 +51,7 @@ UNIDADES
 """
 
 import importlib
+import inspect
 import io
 import tempfile
 from pathlib import Path
@@ -454,7 +455,25 @@ st.sidebar.caption(f"Archivo en uso: `{Path(input_path).name}`")
 # Contrapartida: los mensajes derivados (TBX en servicio, cantidad de periodos
 # del rango) reflejan los valores del ULTIMO submit, no lo que estas tipeando.
 # Se actualizan al apretar cualquiera de los dos botones.
-with st.sidebar.form("parametros"):
+#
+# `enter_to_submit=False`: por default un Enter en cualquier text_input o
+# number_input del form dispara el submit, o sea corre el pipeline entero sin
+# querer. Con esto Enter solo comitea el valor del campo y la unica forma de
+# ejecutar es apretar un boton. El parametro existe desde Streamlit 1.39, asi
+# que se chequea la firma antes de pasarlo en vez de romper en versiones viejas.
+_form_kwargs = (
+    {"enter_to_submit": False}
+    if "enter_to_submit" in inspect.signature(st.form).parameters
+    else {}
+)
+
+if not _form_kwargs:
+    st.sidebar.caption(
+        "⚠️ Streamlit < 1.39: Enter todavía ejecuta el pipeline. "
+        "Actualizá (`pip install -U streamlit`) para desactivarlo."
+    )
+
+with st.sidebar.form("parametros", **_form_kwargs):
 
     st.header("2. Fechas")
     periodo_str = st.text_input(
