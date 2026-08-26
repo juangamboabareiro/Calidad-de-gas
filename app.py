@@ -104,6 +104,12 @@ st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wid
 # Unidades: cuántas unidades de Volumen_inyectado hay en 1 MMm3/d.
 FACTOR_MM = float(getattr(config, "FACTOR_MMm3_A_UNIDAD_VOLUMEN", 1000.0))
 
+# `_actualizar_config_y_recargar` sobrescribe config.PATH_INPUTS con el path de
+# la corrida. Si eso pasa una vez con un archivo subido, el default de disco
+# queda perdido para siempre y la rama "sin archivo" del uploader lee el
+# tempdir. Se guarda el valor original en el primer import del proceso.
+PATH_INPUTS_DEFAULT = config.PATH_INPUTS
+
 # Poder calorífico de referencia para MMm3eq/d (base 9300 kcal/m3). Si no está
 # definido en config no se muestra el equivalente, en vez de inventar un número.
 PCS_REFERENCIA = getattr(config, "PCS_REFERENCIA_EQ", None)
@@ -433,98 +439,116 @@ if uploaded is not None:
     with open(input_path, "wb") as f:
         f.write(uploaded.getbuffer())
 else:
-    input_path = config.PATH_INPUTS
+    input_path = PATH_INPUTS_DEFAULT
 st.sidebar.caption(f"Archivo en uso: `{Path(input_path).name}`")
 
-st.sidebar.header("2. Fechas")
-periodo_str = st.sidebar.text_input(
-    "Período considerado (MM-YYYY)", value=config.PERIODO_CONSIDERADO.strftime("%m-%Y")
-)
-try:
-    periodo_ts = pd.Timestamp(periodo_str.replace("/", "-"))
-except Exception:
-    st.sidebar.error("Formato inválido, se usa el default de config.")
-    periodo_ts = config.PERIODO_CONSIDERADO
+# Las secciones 2 a 7 van dentro de un FORM. Adentro de un form los widgets no
+# disparan rerun: se comitean todos juntos cuando apretas un submit. Sin esto,
+# el click en "Ejecutar pipeline" se lo comia el blur del campo que estabas
+# editando (el blur dispara su propio rerun, y en ese rerun el boton vale
+# False), y habia que clickear dos veces por cada campo tocado.
+#
+# El file_uploader queda AFUERA a proposito: necesita su propio rerun para
+# subir el archivo, adentro del form no funcionaria.
+#
+# Contrapartida: los mensajes derivados (TBX en servicio, cantidad de periodos
+# del rango) reflejan los valores del ULTIMO submit, no lo que estas tipeando.
+# Se actualizan al apretar cualquiera de los dos botones.
+with st.sidebar.form("parametros"):
 
-fecha_pm_str = st.sidebar.text_input(
-    "Fecha PM TTY-TBX (MM-YYYY)",
-    value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
-    help="Antes de esta fecha TTY-TBX no está en servicio y todo el pool va a TTY-DP.",
-)
-try:
-    fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
-except Exception:
-    st.sidebar.error("Formato inválido, se usa el default de config.")
-    fecha_pm_ts = config.FECHA_PM_TTY_TBX
+    st.header("2. Fechas")
+    periodo_str = st.text_input(
+        "Período considerado (MM-YYYY)", value=config.PERIODO_CONSIDERADO.strftime("%m-%Y")
+    )
+    try:
+        periodo_ts = pd.Timestamp(periodo_str.replace("/", "-"))
+    except Exception:
+        st.error("Formato inválido, se usa el default de config.")
+        periodo_ts = config.PERIODO_CONSIDERADO
 
-tbx_en_servicio = periodo_ts >= fecha_pm_ts
-if tbx_en_servicio:
-    st.sidebar.success("TTY-TBX **en servicio** en este período.")
-else:
-    st.sidebar.info("TTY-TBX **fuera de servicio**: el pool va directo a TTY-DP.")
+    fecha_pm_str = st.text_input(
+        "Fecha PM TTY-TBX (MM-YYYY)",
+        value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
+        help="Antes de esta fecha TTY-TBX no está en servicio y todo el pool va a TTY-DP.",
+    )
+    try:
+        fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
+    except Exception:
+        st.error("Formato inválido, se usa el default de config.")
+        fecha_pm_ts = config.FECHA_PM_TTY_TBX
 
-st.sidebar.header("3. Evacuación de LGN (tn/d)")
-st.sidebar.caption("Restricción activa: define cuánto gas puede tratar cada planta.")
-evac_tty_tbx = st.sidebar.number_input(
-    "TTY-TBX", value=float(config.CAPACIDAD_EVACUACION_TTY_TBX), step=100.0)
-evac_tty_dp = st.sidebar.number_input(
-    "TTY-DP", value=float(config.CAPACIDAD_EVACUACION_TTY_DP), step=10.0)
-evac_mega = st.sidebar.number_input(
-    "MEGA", value=float(config.CAPACIDAD_EVACUACION_MEGA), step=100.0)
+    tbx_en_servicio = periodo_ts >= fecha_pm_ts
+    if tbx_en_servicio:
+        st.success("TTY-TBX **en servicio** en este período.")
+    else:
+        st.info("TTY-TBX **fuera de servicio**: el pool va directo a TTY-DP.")
 
-st.sidebar.header("4. Traspasos máximos (MMm3/d)")
-max_deriv_tbx_dp_mm = st.sidebar.number_input(
-    "TTY-TBX → TTY-DP",
-    value=float(config.MAX_DERIVACION_TTY_TBX_A_TTY_DP) / FACTOR_MM, step=0.5,
-    help="Lo que exceda este tope es bypass de TTY-TBX.")
-max_deriv_dp_mega_mm = st.sidebar.number_input(
-    "TTY-DP → MEGA",
-    value=float(config.MAX_DERIVACION_TTY_DP_A_MEGA) / FACTOR_MM, step=0.5,
-    help="Lo que exceda este tope es bypass de TTY-DP.")
+    st.header("3. Evacuación de LGN (tn/d)")
+    st.caption("Restricción activa: define cuánto gas puede tratar cada planta.")
+    evac_tty_tbx = st.number_input(
+        "TTY-TBX", value=float(config.CAPACIDAD_EVACUACION_TTY_TBX), step=100.0)
+    evac_tty_dp = st.number_input(
+        "TTY-DP", value=float(config.CAPACIDAD_EVACUACION_TTY_DP), step=10.0)
+    evac_mega = st.number_input(
+        "MEGA", value=float(config.CAPACIDAD_EVACUACION_MEGA), step=100.0)
 
-with st.sidebar.expander("5. Capacidad de ingreso de gas (MMm3/d)"):
-    st.caption("Rara vez limita: entra solo como tope adicional junto a la evacuación.")
-    cap_tty_tbx_mm = st.number_input(
-        "TTY-TBX", value=float(config.CAPACIDAD_TTY_TBX) / FACTOR_MM, step=1.0)
-    cap_tty_dp_mm = st.number_input(
-        "TTY-DP", value=float(config.CAPACIDAD_TTY_DP) / FACTOR_MM, step=1.0)
-    cap_mega_mm = st.number_input(
-        "MEGA", value=float(config.CAPACIDAD_MEGA) / FACTOR_MM, step=1.0)
+    st.header("4. Traspasos máximos (MMm3/d)")
+    max_deriv_tbx_dp_mm = st.number_input(
+        "TTY-TBX → TTY-DP",
+        value=float(config.MAX_DERIVACION_TTY_TBX_A_TTY_DP) / FACTOR_MM, step=0.5,
+        help="Lo que exceda este tope es bypass de TTY-TBX.")
+    max_deriv_dp_mega_mm = st.number_input(
+        "TTY-DP → MEGA",
+        value=float(config.MAX_DERIVACION_TTY_DP_A_MEGA) / FACTOR_MM, step=0.5,
+        help="Lo que exceda este tope es bypass de TTY-DP.")
 
-st.sidebar.header("6. Salidas")
-guardar_csvs = st.sidebar.checkbox("Guardar CSVs en disco al ejecutar", value=False)
+    with st.expander("5. Capacidad de ingreso de gas (MMm3/d)"):
+        st.caption("Rara vez limita: entra solo como tope adicional junto a la evacuación.")
+        cap_tty_tbx_mm = st.number_input(
+            "TTY-TBX", value=float(config.CAPACIDAD_TTY_TBX) / FACTOR_MM, step=1.0)
+        cap_tty_dp_mm = st.number_input(
+            "TTY-DP", value=float(config.CAPACIDAD_TTY_DP) / FACTOR_MM, step=1.0)
+        cap_mega_mm = st.number_input(
+            "MEGA", value=float(config.CAPACIDAD_MEGA) / FACTOR_MM, step=1.0)
 
-run = st.sidebar.button("▶️ Ejecutar pipeline", type="primary", use_container_width=True)
+    st.header("6. Salidas")
+    guardar_csvs = st.checkbox("Guardar CSVs en disco al ejecutar", value=False)
 
-st.sidebar.header("7. Serie temporal")
-st.sidebar.caption(
-    "Alimenta el tab **Graphs**. Corre el pipeline una vez por mes del rango "
-    "con los mismos parámetros de capacidad de arriba, así que un rango largo "
-    "tarda: son N corridas completas."
-)
-serie_desde_str = st.sidebar.text_input(
-    "Desde (MM-YYYY)",
-    value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
-    key="serie_desde",
-)
-serie_hasta_str = st.sidebar.text_input(
-    "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
+    run = st.form_submit_button(
+        "▶️ Ejecutar pipeline", type="primary", use_container_width=True)
 
-try:
-    serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()
-    serie_hasta = pd.Timestamp(serie_hasta_str.replace("/", "-")).normalize()
-    periodos_serie = list(pd.date_range(serie_desde, serie_hasta, freq="MS"))
-except Exception:
-    st.sidebar.error("Rango inválido (formato MM-YYYY).")
-    periodos_serie = []
+    st.header("7. Serie temporal")
+    st.caption(
+        "Alimenta el tab **Graphs**. Corre el pipeline una vez por mes del rango "
+        "con los mismos parámetros de capacidad de arriba, así que un rango largo "
+        "tarda: son N corridas completas."
+    )
+    serie_desde_str = st.text_input(
+        "Desde (MM-YYYY)",
+        value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
+        key="serie_desde",
+    )
+    serie_hasta_str = st.text_input(
+        "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
 
-if periodos_serie:
-    st.sidebar.caption(f"{len(periodos_serie)} período(s) en el rango.")
-else:
-    st.sidebar.caption("El rango no contiene ningún inicio de mes.")
+    try:
+        serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()
+        serie_hasta = pd.Timestamp(serie_hasta_str.replace("/", "-")).normalize()
+        periodos_serie = list(pd.date_range(serie_desde, serie_hasta, freq="MS"))
+    except Exception:
+        st.error("Rango inválido (formato MM-YYYY).")
+        periodos_serie = []
 
-run_serie = st.sidebar.button(
-    "📈 Calcular serie", use_container_width=True, disabled=not periodos_serie)
+    if periodos_serie:
+        st.caption(f"{len(periodos_serie)} período(s) en el rango.")
+    else:
+        st.caption("El rango no contiene ningún inicio de mes.")
+
+    # Sin `disabled`: adentro del form no puede reaccionar a lo que tipeas, se
+    # quedaria con el estado del submit anterior. El rango vacio se valida
+    # abajo, en el `if run_serie`.
+    run_serie = st.form_submit_button(
+        "📈 Calcular serie", use_container_width=True)
 
 PARAMS = {
     "PERIODO_CONSIDERADO": periodo_ts,
@@ -544,6 +568,43 @@ PARAMS = {
 # Pipeline
 # ===========================================================================
 
+@st.cache_data(show_spinner=False)
+def _cargar_hojas(path, _firma):
+    """Las nueve lecturas del Excel, cacheadas juntas.
+
+    `_firma` es (mtime, size) del archivo: entra solo para invalidar el cache si
+    el excel cambia en disco. No se usa adentro.
+
+    `st.cache_data` devuelve una COPIA en cada acceso, asi que `preprocesar_inputs`
+    puede seguir mutando los DataFrames in place sin contaminar el cache.
+
+    OJO: esto NO cachea la lectura que hace `domain.ctes_gas` en su import, que
+    `_actualizar_config_y_recargar` rehace con `importlib.reload` en cada corrida.
+    Mientras los modulos sigan leyendo config a nivel de modulo, esa queda afuera.
+    """
+    return {
+        "inyeccion_9300": load_inyeccion_9300(path),
+        "coeficientes": load_coeficientes(path),
+        "retenidos_rtp": load_retenidos_rtp(path),
+        "flujos_directos": load_flujos_directos(path),
+        "yacimientos": load_yacimientos(path),
+        "detalles_hubs": load_detalles_hubs(path),
+        "propiedades": load_propiedades(path),
+        "plantas_yacimientos": load_plantas_yacimientos(path),
+        "matriz_inyecciones": load_matriz_inyecciones(path),
+    }
+
+
+def _firma_archivo(path):
+    """(mtime, size) para invalidar el cache. Si el path no existe se devuelve
+    None y `_cargar_hojas` cachea igual: el error lo tira el loader, como antes."""
+    try:
+        st_ = Path(path).stat()
+        return (st_.st_mtime, st_.st_size)
+    except OSError:
+        return None
+
+
 def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
     mods = _actualizar_config_y_recargar(path, params)
     ctes = mods["ctes_gas"]
@@ -556,14 +617,18 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
     tbx_activa = bool(periodo >= params["FECHA_PM_TTY_TBX"])
 
     with _status("Cargando datos de entrada...", silencioso) as status:
-        inyeccion_9300 = load_inyeccion_9300(path)
-        coeficientes = load_coeficientes(path)
-        retenidos_rtp = load_retenidos_rtp(path)
-        flujos_directos = load_flujos_directos(path)
-        yacimientos = load_yacimientos(path)
-        detalles_hubs = load_detalles_hubs(path)
-        propiedades = load_propiedades(path)
-        plantas_yacimientos = load_plantas_yacimientos(path)
+        # Cacheado por (path, mtime, size): las 24 corridas de la serie temporal
+        # leen el excel una sola vez en total, no una vez por mes.
+        hojas = _cargar_hojas(path, _firma_archivo(path))
+
+        inyeccion_9300 = hojas["inyeccion_9300"]
+        coeficientes = hojas["coeficientes"]
+        retenidos_rtp = hojas["retenidos_rtp"]
+        flujos_directos = hojas["flujos_directos"]
+        yacimientos = hojas["yacimientos"]
+        detalles_hubs = hojas["detalles_hubs"]
+        propiedades = hojas["propiedades"]
+        plantas_yacimientos = hojas["plantas_yacimientos"]
         status.update(label="Datos cargados ✅", state="complete")
 
     with _status("Normalizando y preprocesando...", silencioso) as status:
@@ -664,7 +729,7 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         # origenes incluyen areas que inyectan directo a la planta. TTY no la
         # necesita (VMN y VMS son gasoductos) pero pasarla no cambia nada.
         comunes = dict(
-            matriz_inyecciones=load_matriz_inyecciones(path),
+            matriz_inyecciones=hojas["matriz_inyecciones"],
             calcular_retenidos=calcular_retenidos,
             tabla_total_flujos_directos=tabla_total_flujos_directos,
             tabla_total_yacimientos=tabla_total_yacimientos,
@@ -916,7 +981,10 @@ if run:
     finally:
         st.session_state["diagnostico"] = registro
 
-if run_serie:
+if run_serie and not periodos_serie:
+    st.sidebar.error("El rango no contiene ningún inicio de mes: no hay nada que correr.")
+
+elif run_serie:
     try:
         # Los `print` del pipeline se capturan y descartan: multiplicados por N
         # meses tapan la consola y el diagnostico util es el de la corrida
