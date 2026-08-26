@@ -37,6 +37,7 @@ import pandas as pd
 import streamlit as st
 
 from ui.compat import ancho, arrow_safe
+from ui.sandbox_estado import boton_restablecer, hay_algo_que_restablecer
 
 from pipeline.plantas.cascada import resolver_cascada, dot_cascada, desvio_balance
 from ui.plantas_editor import panel_plantas, obtener_registro, configurar_scope
@@ -174,6 +175,12 @@ def _publicar_red_sandbox(yac):
 def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
                    factor_mm, comunes):
     """Editor + botón de correr. Se envuelve en un fragment (ver abajo)."""
+
+    # Arriba y a la vista: es la salida de emergencia. Enterrado en un expander
+    # no sirve para alguien que no sabe que se puede deshacer.
+    if hay_algo_que_restablecer():
+        from ui.plantas_editor import _rerun as _rerun_editor
+        boton_restablecer(_rerun_editor)
 
     sub_plantas, sub_ductos = st.tabs(["🏭 Plantas", "🛢️ Gasoductos"])
 
