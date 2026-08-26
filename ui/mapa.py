@@ -71,7 +71,7 @@ RADIO_TIPO = {"planta": 4500, "gasoducto": 2800, "area": 1500}
 # una capa por grupo, y el costo de render no lo justifica: son varias
 # GeoJsonLayer serializandose por separado en cada rerun. El desglose por
 # empresa vive ahora en la tabla de abajo del mapa, que no cuesta nada.
-VERSION = "2026-08-25 · red del sandbox + fragment"
+VERSION = "2026-08-24c · sin completar_gasoductos (TTY visible)"
 
 COLOR_DUCTOS = [120, 135, 150, 200]
 ANCHO_DUCTOS = 1.2
@@ -152,78 +152,6 @@ def _bbox(puntos: pd.DataFrame, margen: float = 0.4):
 
 # ===========================================================================
 # Posicion derivada de los gasoductos
-# ===========================================================================
-
-def completar_gasoductos(nodos: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ubica los gasoductos sin coordenadas en el baricentro de lo que les inyecta.
-
-    Un gasoducto es una LINEA, no un punto, asi que no tiene una coordenada
-    "verdadera" que cargar. Y mientras no la tenga, ninguna arista se dibuja:
-    los flujos van area -> gasoducto y hacen falta las dos puntas.
-
-    Se lo ubica entonces en el centroide de las areas que le inyectan,
-    ponderado por volumen. Es una posicion ESQUEMATICA: no es donde pasa el
-    ducto, es desde donde le llega el gas. Sirve para que los arcos converjan
-    en un lugar con sentido; para la traza real estan las lineas del GeoJSON.
-
-    Cualquier gasoducto que ya tenga lat/lon cargada a mano se respeta: esta
-    funcion solo rellena huecos.
-
-    Returns
-    -------
-    pandas.DataFrame
-        `nodos` con las coordenadas completadas y la columna `derivada` en True
-        para los que se calcularon aca.
-    """
-    salida = nodos.copy()
-
-    if "derivada" not in salida.columns:
-        salida["derivada"] = False
-
-    coords = {
-        fila.clave: (float(fila.lon), float(fila.lat))
-        for fila in salida.dropna(subset=["lat", "lon"]).itertuples()
-    }
-
-    faltan = salida[
-        (salida["tipo"] == "gasoducto") & salida["lat"].isna()
-    ]
-
-    if faltan.empty or edges is None or not len(edges):
-        return salida
-
-    aristas = edges.copy()
-    aristas["k_origen"] = clave_cruce(aristas["origen"])
-    aristas["k_destino"] = clave_cruce(aristas["destino"])
-    aristas["valor"] = pd.to_numeric(aristas["valor"], errors="coerce").fillna(0)
-
-    for idx, nodo in faltan.iterrows():
-        entrantes = aristas[
-            (aristas["k_destino"] == nodo["clave"]) & (aristas["valor"] > 0)
-        ]
-        entrantes = entrantes[entrantes["k_origen"].isin(coords)]
-
-        if entrantes.empty:
-            continue
-
-        peso = entrantes["valor"].sum()
-
-        if peso <= 0:
-            continue
-
-        lon = sum(coords[k][0] * v for k, v in
-                  zip(entrantes["k_origen"], entrantes["valor"])) / peso
-        lat = sum(coords[k][1] * v for k, v in
-                  zip(entrantes["k_origen"], entrantes["valor"])) / peso
-
-        salida.loc[idx, ["lat", "lon", "derivada"]] = [lat, lon, True]
-
-    return salida
-
-
-# ===========================================================================
-# Racconto de ductos
 # ===========================================================================
 
 def _largo_km(coords) -> float:
@@ -627,10 +555,9 @@ def _ayuda_sin_datos(que: str):
 def _elegir_red(resultados):
     """Red oficial, o la del sandbox si interviniste algun ducto.
 
-    No hay que darle coordenadas al ducto nuevo: `completar_gasoductos` e
-    `inferir_posiciones` ya lo ubican en el centroide de sus origenes ponderado
-    por volumen, igual que a cualquier otro. Un ducto nuevo entra por el mismo
-    camino que VMN.
+    No hay que darle coordenadas al ducto nuevo: `inferir_posiciones` lo ubica
+    en el centroide de sus origenes ponderado por volumen, igual que a
+    cualquier otro. Un ducto nuevo entra por el mismo camino que VMN.
 
     Si nunca corriste el sandbox, la clave no existe en `session_state` y esto
     devuelve la red oficial sin dibujar ningun control.
@@ -690,10 +617,15 @@ def _cuerpo_mapa(resultados: dict, ruta_nodos=RUTA_NODOS):
         _ayuda_sin_datos(str(ruta_nodos))
         return
 
-    # Los gasoductos casi nunca tienen coordenada cargada (son lineas). Sin
-    # esto ninguna arista tiene sus dos puntas y el mapa sale sin un solo arco.
-    nodos = completar_gasoductos(nodos, edges)
-
+    # Los gasoductos y las plantas no tienen coordenada propia: los ubica
+    # `inferir_posiciones`, que ademas abanica los que caen en el mismo punto.
+    #
+    # Hubo aca una `completar_gasoductos` que hacia la mitad de ese trabajo
+    # antes, y rompia el resto: dejaba los gasoductos marcados como posicion
+    # "cargada", asi que `_separar_coincidentes` los daba por dato real y no
+    # los separaba. Como varios comparten las mismas areas de origen, caian
+    # todos en el mismo pixel, y las plantas inferidas desde ellos tambien.
+    # TTY quedaba dibujada pero enterrada bajo los marcadores de VMN y VMS.
     inferir = st.checkbox(
         "Ubicar gasoductos y plantas donde converge su gas", value=True,
         help="Un gasoducto es una línea y una planta no figura en las capas "
