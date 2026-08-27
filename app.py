@@ -1604,71 +1604,87 @@ with tab_cascada:
                    "Valores en MMm3/d.")
     st.graphviz_chart(_dot_cascada(plantas, tbx_en_servicio_res), use_container_width=True)
 
+def _render_seguro(nombre_tab: str, fn, *args, **kwargs):
+    """Ejecuta el contenido de un tab aislando sus errores.
+
+    Los `with tab:` de Streamlit corren en orden de script: sin esto, una
+    excepción en un tab corta el script y deja EN BLANCO todos los tabs que se
+    renderizan después (ya pasó dos veces: Graphs tumbó a Mapa y plantas, y el
+    sandbox tumbó a las plantas). Con esto, el tab que falla muestra su
+    traceback adentro y los demás siguen funcionando.
+    """
+    try:
+        fn(*args, **kwargs)
+    except Exception as e:  # noqa: BLE001 - queremos aislar CUALQUIER fallo de UI
+        st.error(f"Este tab falló: {type(e).__name__}: {e}. "
+                 "Los demás tabs siguen funcionando.")
+        st.exception(e)
+
+
 with tab_graphs:
-    panel_graphs(
-        resultados,
-        serie=st.session_state.get("serie"),
-        fallos=st.session_state.get("serie_fallos"),
-    )
+    _render_seguro("Graphs", panel_graphs, resultados,
+                   serie=st.session_state.get("serie"),
+                   fallos=st.session_state.get("serie_fallos"))
 
 with tab_tablas:
-    panel_tablas(resultados)
+    _render_seguro("Tablas totales", panel_tablas, resultados)
 
 with tab_red:
-    panel_mapa(resultados)
+    _render_seguro("Mapa de la red", panel_mapa, resultados)
 
 with tab_sandbox:
-    panel_tab_plantas(resultados, resultados.get("params_efectivos", PARAMS), FACTOR_MM)
+    _render_seguro("Plantas (sandbox)", panel_tab_plantas, resultados,
+                   resultados.get("params_efectivos", PARAMS), FACTOR_MM)
 
 
-def _mostrar_planta(tab, nombre_planta, datos):
-    with tab:
-        _kpi_planta(nombre_planta, datos)
-        st.divider()
+def _mostrar_planta_contenido(nombre_planta, datos):
+    _kpi_planta(nombre_planta, datos)
+    st.divider()
 
-        st.markdown("**Esquema de la planta**")
-        mostrar_esquema_planta(
-            nombre_planta=nombre_planta,
-            color_planta=datos.get("color", "#5DADE2"),
-            activa=datos["flujos"].get("activa", True),
-            **_armar_esquema(datos),
-        )
-        st.divider()
+    st.markdown("**Esquema de la planta**")
+    mostrar_esquema_planta(
+        nombre_planta=nombre_planta,
+        color_planta=datos.get("color", "#5DADE2"),
+        activa=datos["flujos"].get("activa", True),
+        **_armar_esquema(datos),
+    )
+    st.divider()
 
-        st.markdown("**Origen del pool**")
+    st.markdown("**Origen del pool**")
+    st.caption(
+        "El pool se arma con todas las filas cuyo `Gasoducto` es esta planta, "
+        "tomadas tanto de flujos directos (orígenes que son gasoductos) como de "
+        "yacimientos (áreas que inyectan directo)."
+    )
+    _kpi_origenes(datos)
+    st.divider()
+
+    with st.expander("Ver tabla de detalle de la planta"):
         st.caption(
-            "El pool se arma con todas las filas cuyo `Gasoducto` es esta planta, "
-            "tomadas tanto de flujos directos (orígenes que son gasoductos) como de "
-            "yacimientos (áreas que inyectan directo)."
+            "`Volumen_pool` es el gas del pool antes del reparto; "
+            "`Volumen_inyectado` es la porción efectivamente asignada a esta planta. "
+            "`Origen_tabla` dice de qué tabla total salió cada fila. "
+            "Si recibe una derivación con otra composición, aparece como fila extra "
+            "con el nombre de la planta de origen en `Area`."
         )
-        _kpi_origenes(datos)
-        st.divider()
+        _mostrar_tabla(f"Detalle {nombre_planta}", datos["tabla_total"], key_prefix="planta")
 
-        with st.expander("Ver tabla de detalle de la planta"):
-            st.caption(
-                "`Volumen_pool` es el gas del pool antes del reparto; "
-                "`Volumen_inyectado` es la porción efectivamente asignada a esta planta. "
-                "`Origen_tabla` dice de qué tabla total salió cada fila. "
-                "Si recibe una derivación con otra composición, aparece como fila extra "
-                "con el nombre de la planta de origen en `Area`."
-            )
-            _mostrar_tabla(f"Detalle {nombre_planta}", datos["tabla_total"], key_prefix="planta")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Composición gas rico (entrada)**")
-            st.dataframe(_a_dataframe_seguro(datos["gas_rico_IN"], "Gas rico IN"),
-                         use_container_width=True)
-        with c2:
-            st.markdown("**Composición gas residual (salida)**")
-            st.dataframe(_a_dataframe_seguro(datos["gas_residual_OUT"].T, "Gas residual OUT"),
-                         use_container_width=True)
-
-        st.markdown("**LGN retenido (tn/d) — sobre el gas efectivamente tratado**")
-        st.dataframe(_a_dataframe_seguro(datos["retenidos_vol"], "Retenido"),
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Composición gas rico (entrada)**")
+        st.dataframe(_a_dataframe_seguro(datos["gas_rico_IN"], "Gas rico IN"),
+                     use_container_width=True)
+    with c2:
+        st.markdown("**Composición gas residual (salida)**")
+        st.dataframe(_a_dataframe_seguro(datos["gas_residual_OUT"].T, "Gas residual OUT"),
                      use_container_width=True)
 
+    st.markdown("**LGN retenido (tn/d) — sobre el gas efectivamente tratado**")
+    st.dataframe(_a_dataframe_seguro(datos["retenidos_vol"], "Retenido"),
+                 use_container_width=True)
 
-_mostrar_planta(tab_tbx, "TTY - TBX", plantas["TTY - TBX"])
-_mostrar_planta(tab_dp, "TTY - Dew Point", plantas["TTY - Dew Point"])
-_mostrar_planta(tab_mega, "MEGA", plantas["MEGA"])
+
+for _tab, _nombre in ((tab_tbx, "TTY - TBX"), (tab_dp, "TTY - Dew Point"),
+                      (tab_mega, "MEGA")):
+    with _tab:
+        _render_seguro(_nombre, _mostrar_planta_contenido, _nombre, plantas[_nombre])
