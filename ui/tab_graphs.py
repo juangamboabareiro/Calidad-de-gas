@@ -248,25 +248,73 @@ def _g_calidad_mezcla(mezcla: pd.DataFrame):
     st.altair_chart(grafico.interactive(), use_container_width=True)
 
 
+def _leer_prhc_externo(archivo) -> pd.DataFrame | None:
+    """Lee la salida del software de PRHC: busca una columna de fecha y una de
+    PRHC por nombre (regex), sin exigir un formato exacto de encabezados."""
+    try:
+        if archivo.name.lower().endswith((".xlsx", ".xls", ".xlsm")):
+            ext = pd.read_excel(archivo)
+        else:
+            ext = pd.read_csv(archivo, sep=None, engine="python")
+    except Exception as e:
+        st.error(f"No pude leer el archivo: {e}")
+        return None
+
+    col_fecha = next((c for c in ext.columns
+                      if re.search(r"period|fecha|mes|date", str(c), re.I)), None)
+    col_prhc = next((c for c in ext.columns
+                     if re.search(r"prhc|roc[ií]o|dew", str(c), re.I)), None)
+    if col_fecha is None or col_prhc is None:
+        st.error("El archivo necesita una columna de período (`periodo`, "
+                 "`fecha`, `mes`...) y una de PRHC (`prhc`, `rocío`, "
+                 f"`dewpoint`...). Encontré: {list(ext.columns)}")
+        return None
+
+    df = pd.DataFrame({
+        "periodo": pd.to_datetime(ext[col_fecha], errors="coerce"),
+        "valor": pd.to_numeric(ext[col_prhc], errors="coerce"),
+    })
+    if df["periodo"].isna().all():
+        # Segundo intento para formatos tipo "07-2026" / "01/07/2026".
+        df["periodo"] = pd.to_datetime(ext[col_fecha].astype(str),
+                                       errors="coerce", dayfirst=True)
+    df = df.dropna()
+    if df.empty:
+        st.error("No quedó ninguna fila válida después de parsear fechas y "
+                 "valores.")
+        return None
+    df["periodo"] = df["periodo"].dt.to_period("M").dt.to_timestamp()
+    return df
+
+
 def _g_prhc(mezcla: pd.DataFrame):
     st.markdown("### PRHC de la mezcla [°C]")
 
-    if "prhc" not in mezcla.columns or mezcla["prhc"].notna().sum() == 0:
-        st.info(
-            "El punto de rocío de hidrocarburos requiere un flash con "
-            "ecuación de estado y el modelo todavía no lo calcula — no se "
-            "grafica un número inventado. Para activar este gráfico, creá "
-            "`domain/prhc.py` con una función "
-            "`calcular_prhc(fracciones: pd.Series) -> float` (°C, fracciones "
-            "molares normalizadas indexadas por compuesto): la serie la "
-            "detecta sola y el gráfico aparece con su línea de límite."
-        )
-        return
+    # Fuente 1: hook interno (domain/prhc.py), si algún día existe.
+    df = None
+    if "prhc" in mezcla.columns and mezcla["prhc"].notna().sum() > 0:
+        df = mezcla.dropna(subset=["prhc"])[["periodo", "prhc"]].rename(
+            columns={"prhc": "valor"})
+        st.caption("Calculado con `domain/prhc.py` sobre la composición de "
+                   "la mezcla.")
+    else:
+        # Fuente 2 (la habitual): la salida del software externo de PRHC.
+        st.caption("El PRHC se calcula en otro software: subí acá su salida "
+                   "(una columna de período y una de PRHC en °C) y se "
+                   "grafica contra el límite.")
+        archivo = st.file_uploader(
+            "CSV o Excel con el PRHC por período", type=["csv", "xlsx", "xls", "xlsm"],
+            key="g_prhc_upload")
+        if archivo is None:
+            return
+        df = _leer_prhc_externo(archivo)
+        if df is None:
+            return
 
     limite = st.number_input("Límite PRHC [°C]", value=-4.0, step=0.5,
                              key="g_prhc_limite")
 
-    df = mezcla.dropna(subset=["prhc"]).rename(columns={"prhc": "valor"})
+    df = df.sort_values("periodo").copy()
     df["serie"] = "Mezcla con salida de plantas"
     grafico = _lineas(df, "serie", "valor", "°C", fmt=",.1f")
     grafico = grafico + _regla_maximo(limite, f"Límite PRHC {limite:g}°C")
@@ -548,10 +596,18 @@ def _tabla_resumen_anual(plantas_df: pd.DataFrame):
     crudo = agg.T  # filas = métricas, columnas = (planta, año)
     crudo.columns = [f"{p} {a}" for p, a in crudo.columns]
 
-    vista = crudo.copy()
-    for fila, (_, formato) in _FILAS_RESUMEN.items():
-        vista.loc[fila] = crudo.loc[fila].map(
-            lambda v: "—" if pd.isna(v) else formato.format(v))
+    # La vista formateada se arma como tabla de strings desde el vacio. Antes
+    # se hacia `vista.loc[fila] = strings` sobre una copia float: pandas >= 3
+    # ya no convierte el dtype en la asignacion y revienta con
+    # "Invalid value for dtype 'float64'".
+    vista = pd.DataFrame(
+        {
+            fila: crudo.loc[fila].map(
+                lambda v, f=formato: "—" if pd.isna(v) else f.format(v))
+            for fila, (_, formato) in _FILAS_RESUMEN.items()
+        }
+    ).T
+    vista.columns = crudo.columns
 
     st.dataframe(vista, use_container_width=True)
     _descargar_csv(crudo.reset_index(names="Métrica"), "resumen_anual",
