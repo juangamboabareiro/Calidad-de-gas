@@ -706,6 +706,66 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
             data=st.session_state["reporte_pdf"],
             file_name=f"reporte_graphs_{pd.Timestamp.now():%Y%m%d}.pdf",
             mime="application/pdf", key="dl_reporte_pdf")
+
+    with st.expander("🖼️ Exportar gráficos sueltos (para presentaciones)"):
+        try:
+            from ui.reporte_graphs import catalogo_graficos, exportar_graficos
+            _catalogo = list(catalogo_graficos(serie))
+        except ImportError:
+            st.error("Falta `matplotlib` para exportar: agregalo a "
+                     "requirements.txt y redeployá.")
+            _catalogo = []
+
+        if _catalogo:
+            st.caption(
+                "Elegí los gráficos y ajustá tamaño y calidad de cada uno. El "
+                "default (25.4 × 14.3 cm) es el cuerpo de una slide 16:9; el "
+                "DPI define la nitidez del PNG (200 alcanza para proyectar, "
+                "300 para imprimir).")
+            sel = st.multiselect("Gráficos a exportar", _catalogo,
+                                 default=_catalogo[:2], key="exp_sel")
+            formato = st.radio(
+                "Formato", ["PNG", "SVG"], horizontal=True, key="exp_fmt",
+                help="PNG se pega directo en la slide. SVG es vectorial: se ve "
+                     "perfecto a cualquier zoom y es editable en PowerPoint; "
+                     "el DPI no le aplica.")
+            if sel:
+                semilla = pd.DataFrame({"Gráfico": sel,
+                                        "Ancho [cm]": 25.4,
+                                        "Alto [cm]": 14.3,
+                                        "DPI": 200})
+                # La key depende de la selección: al cambiarla, la tabla se
+                # resiembra (si no, el editor arrastra filas de la selección
+                # anterior).
+                tabla = st.data_editor(
+                    semilla, hide_index=True, use_container_width=True,
+                    key=f"exp_editor_{abs(hash(tuple(sel))) % 99991}",
+                    column_config={
+                        "Gráfico": st.column_config.TextColumn(disabled=True),
+                        "Ancho [cm]": st.column_config.NumberColumn(
+                            min_value=5.0, max_value=60.0, step=0.5),
+                        "Alto [cm]": st.column_config.NumberColumn(
+                            min_value=4.0, max_value=40.0, step=0.5),
+                        "DPI": st.column_config.NumberColumn(
+                            min_value=72, max_value=600, step=10),
+                    })
+                if st.button("🖼️ Generar", key="btn_exportar_graficos"):
+                    pedidos = [{"nombre": f["Gráfico"],
+                                "ancho_cm": f["Ancho [cm]"],
+                                "alto_cm": f["Alto [cm]"],
+                                "dpi": f["DPI"]}
+                               for _, f in tabla.iterrows()]
+                    try:
+                        with st.spinner("Renderizando..."):
+                            st.session_state["export_graficos"] = exportar_graficos(
+                                serie, pedidos, formato=formato.lower())
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"No se pudo exportar: {e}")
+                if st.session_state.get("export_graficos"):
+                    contenido, nombre, mime = st.session_state["export_graficos"]
+                    st.download_button(f"⬇️ Descargar {nombre}", data=contenido,
+                                       file_name=nombre, mime=mime,
+                                       key="dl_export_graficos")
     st.divider()
     areas = serie.get("areas", pd.DataFrame()).copy()
     pool = serie.get("pool", pd.DataFrame()).copy()

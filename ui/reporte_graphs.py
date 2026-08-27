@@ -383,3 +383,234 @@ def generar_reporte_pdf(serie: dict, pcs_max: float = 10_700.0,
         _pagina_titulo(pdf, lambda f: _lam_resumen_anual(f, plantas_df))
 
     return buf.getvalue()
+
+
+# ===========================================================================
+# Exportación de gráficos sueltos (para presentaciones)
+# ===========================================================================
+#
+# A diferencia de las láminas del PDF (páginas compuestas), acá cada entrada
+# del catálogo es UN gráfico en UNA figura, pensado para pegarse en una slide.
+# El catálogo se arma dinámicamente según lo que traiga la serie: un detalle
+# por cada gasoducto grande, un PCS/IW por cada planta, etc.
+
+import zipfile
+import re as _re
+import unicodedata as _ud
+
+
+def _slug(texto) -> str:
+    """Nombre de archivo legible: sin tildes ni simbolos, guiones bajos."""
+    plano = _ud.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
+    return _re.sub(r"[^a-z0-9]+", "_", plano.lower()).strip("_")
+
+
+def _g_tpe(fig, mezcla, **_):
+    ax = fig.subplots()
+    etiquetas = {"vol_mega": "MEGA", "vol_tty": "TTY",
+                 "vol_directo_a_gasoducto": "Directo a gasoducto"}
+    cols = [c for c in etiquetas if c in mezcla.columns]
+    m = mezcla.sort_values("periodo")
+    datos = m[cols].fillna(0.0)
+    ax.stackplot(m["periodo"], [datos[c].values for c in cols],
+                 labels=[etiquetas[c] for c in cols],
+                 colors=[_COLORES_TPE[etiquetas[c]] for c in cols], alpha=0.9)
+    ax.legend(fontsize=8, loc="upper left", framealpha=0.6)
+    ax.set_title("Inyección a sistema de tpe [MMm3/d STD]", fontsize=11,
+                 fontweight="bold")
+    ax.set_ylabel("MMm3/d", fontsize=9)
+    _fmt_eje_fechas(ax)
+
+
+def _g_calidad_mezcla(fig, mezcla, pcs_max, iw_max, **_):
+    ax = fig.subplots()
+    m = mezcla.sort_values("periodo")
+    largo = m.melt(id_vars="periodo",
+                   value_vars=[c for c in ("pcs", "iw") if c in m.columns],
+                   var_name="serie", value_name="valor").dropna(subset=["valor"])
+    largo["serie"] = largo["serie"].map({"pcs": "PCS", "iw": "IW"})
+    _lineas_max(ax, largo, "Calidad del gas de la mezcla [kcal/m3]",
+                maximos={"PCS MAX": pcs_max, "IW MAX": iw_max})
+
+
+def _g_apilada_origen(fig, areas, origen, titulo, **_):
+    ax = fig.subplots()
+    df = areas[(areas["origen"] == origen) & areas["volumen"].notna()]
+    _apilada(ax, _top_n_mas_otros(df, "area", "volumen", 10),
+             "area", "volumen", titulo)
+
+
+def _g_detalle_gasoducto(fig, areas, gasoducto, **_):
+    ax = fig.subplots()
+    df = areas[(areas["gasoducto"] == gasoducto) & areas["volumen"].notna()]
+    _apilada(ax, _top_n_mas_otros(df, "area", "volumen", 10),
+             "area", "volumen", f"Inyección a {gasoducto} por área")
+
+
+def _g_calidad_gd(fig, areas, **_):
+    ax = fig.subplots()
+    d = areas[areas["gasoducto"].notna() & areas["volumen"].notna()
+              & areas["pcs"].notna()].copy()
+    d["pcs_x_vol"] = d["pcs"] * d["volumen"]
+    pond = d.groupby(["periodo", "gasoducto"], as_index=False).agg(
+        pcs_x_vol=("pcs_x_vol", "sum"), volumen=("volumen", "sum"))
+    pond = pond[pond["volumen"] > 0]
+    pond["valor"] = pond["pcs_x_vol"] / pond["volumen"]
+    top = (pond.groupby("gasoducto")["volumen"].sum()
+               .sort_values(ascending=False).head(6).index)
+    _lineas_max(ax, pond[pond["gasoducto"].isin(top)]
+                .rename(columns={"gasoducto": "serie"}),
+                "Calidad de ingreso por gasoducto — PCS ponderado")
+
+
+def _g_procesado_bp(fig, plantas_df, **_):
+    ax = fig.subplots()
+    partes = [{"periodo": f["periodo"], "cat": f"{f['planta']} {e}",
+               "valor": float(f[c])}
+              for _, f in plantas_df.iterrows()
+              for e, c in (("Procesado", "vol_asignado"), ("BP", "bypass"))
+              if pd.notna(f.get(c)) and abs(float(f[c])) > 1e-12]
+    _apilada(ax, pd.DataFrame(partes, columns=["periodo", "cat", "valor"]),
+             "cat", "valor", "Procesado y ByPass del pool")
+
+
+def _g_retenidos(fig, plantas_df, **_):
+    ax = fig.subplots()
+    cols = {c: e for c, e in _CORTES.items() if c in plantas_df.columns}
+    largo = (plantas_df.groupby("periodo", as_index=False)[list(cols)].sum()
+             .melt(id_vars="periodo", var_name="cat", value_name="valor"))
+    largo["cat"] = largo["cat"].map(cols)
+    _apilada(ax, largo, "cat", "valor", "Retenidos por compuesto", unidad="tn/d")
+
+
+def _g_pcs_iw_planta(fig, plantas_df, planta, medida, pcs_max, iw_max, **_):
+    ax = fig.subplots()
+    cin, cout = (f"{medida}_in", f"{medida}_out")
+    d = plantas_df[plantas_df["planta"] == planta]
+    largo = d.melt(id_vars="periodo",
+                   value_vars=[c for c in (cin, cout) if c in d.columns],
+                   var_name="serie", value_name="valor").dropna(subset=["valor"])
+    largo["serie"] = largo["serie"].map({cin: "Ingreso", cout: "Salida"})
+    mx = pcs_max if medida == "pcs" else iw_max
+    _lineas_max(ax, largo, f"{planta} — {medida.upper()} entrada vs salida",
+                maximos={f"{medida.upper()} MAX": mx})
+
+
+def _g_caudal_cap(fig, plantas_df, planta, **_):
+    ax = fig.subplots()
+    d = plantas_df[plantas_df["planta"] == planta].sort_values("periodo")
+    if d["vol_disponible"].notna().any():
+        ax.fill_between(d["periodo"], d["vol_disponible"].fillna(0.0),
+                        alpha=0.6, color="#2E86C1", label="Disponible")
+    if "capacidad_ingreso" in d.columns and d["capacidad_ingreso"].notna().any():
+        ax.plot(d["periodo"], d["capacidad_ingreso"], color="#E67E22",
+                linewidth=2.2, label="Capacidad de ingreso")
+    ax.set_title(f"{planta} — caudal vs capacidad", fontsize=11, fontweight="bold")
+    ax.set_ylabel("MMm3/d", fontsize=9)
+    ax.legend(fontsize=8, framealpha=0.6)
+    _fmt_eje_fechas(ax)
+
+
+def catalogo_graficos(serie: dict) -> dict:
+    """{nombre legible -> builder(fig)} de los gráficos exportables.
+
+    El catálogo depende de la serie: si no hay datos para un gráfico, no
+    aparece como opción (mejor que ofrecerlo y exportar un cartel vacío).
+    """
+    plantas_df = serie.get("plantas", pd.DataFrame()).copy()
+    areas = serie.get("areas", pd.DataFrame()).copy()
+    mezcla = serie.get("mezcla", pd.DataFrame()).copy()
+    for df in (plantas_df, areas, mezcla):
+        if "periodo" in df.columns:
+            df["periodo"] = pd.to_datetime(df["periodo"])
+
+    ctx = dict(plantas_df=plantas_df, areas=areas, mezcla=mezcla)
+    cat = {}
+
+    def _agregar(nombre, fn, **kw):
+        cat[nombre] = lambda fig, pcs_max, iw_max: fn(
+            fig, pcs_max=pcs_max, iw_max=iw_max, **ctx, **kw)
+
+    if len(mezcla) and any(c in mezcla.columns for c in
+                           ("vol_mega", "vol_tty", "vol_directo_a_gasoducto")):
+        _agregar("Inyección a sistema de transporte", _g_tpe)
+    if len(mezcla) and "pcs" in mezcla.columns and mezcla["pcs"].notna().any():
+        _agregar("Calidad de la mezcla (PCS / IW)", _g_calidad_mezcla)
+
+    if len(areas):
+        for origen, titulo in (("yacimientos", "Inyección por área"),
+                               ("detalles_hubs", "Inyección por HUB"),
+                               ("hubs", "Entrega de HUBs a plantas")):
+            if (areas["origen"] == origen).any():
+                _agregar(titulo, _g_apilada_origen, origen=origen, titulo=titulo)
+
+        con_gd = areas[areas["gasoducto"].notna() & areas["volumen"].notna()]
+        top_gd = (con_gd.groupby("gasoducto")["volumen"].sum()
+                  .sort_values(ascending=False).head(8).index)
+        for gd in top_gd:
+            _agregar(f"Detalle gasoducto: {gd}", _g_detalle_gasoducto, gasoducto=gd)
+
+        if "pcs" in areas.columns and areas["pcs"].notna().any():
+            _agregar("Calidad por gasoducto (PCS ponderado)", _g_calidad_gd)
+
+    if len(plantas_df):
+        _agregar("Procesado y ByPass del pool", _g_procesado_bp)
+        if any(c in plantas_df.columns for c in _CORTES):
+            _agregar("Retenidos por compuesto", _g_retenidos)
+        for planta in sorted(plantas_df["planta"].unique()):
+            if "pcs_in" in plantas_df.columns and plantas_df["pcs_in"].notna().any():
+                _agregar(f"PCS entrada/salida — {planta}", _g_pcs_iw_planta,
+                         planta=planta, medida="pcs")
+            if "iw_in" in plantas_df.columns and plantas_df["iw_in"].notna().any():
+                _agregar(f"IW entrada/salida — {planta}", _g_pcs_iw_planta,
+                         planta=planta, medida="iw")
+            _agregar(f"Caudal vs capacidad — {planta}", _g_caudal_cap, planta=planta)
+
+    return cat
+
+
+def exportar_graficos(serie: dict, pedidos: list[dict], formato: str = "png",
+                      pcs_max: float = 10_700.0, iw_max: float = 13_000.0):
+    """Renderiza los gráficos pedidos y devuelve (bytes, nombre_archivo, mime).
+
+    pedidos : list[dict]
+        Uno por gráfico: {"nombre", "ancho_cm", "alto_cm", "dpi"}. El tamaño
+        es el de la figura EN LA SLIDE (cm); el DPI define la calidad del PNG
+        (200 alcanza para proyectar, 300 para imprimir). En SVG el DPI no
+        aplica: es vectorial y se ve perfecto a cualquier tamaño.
+
+    Un solo gráfico -> el archivo directo; varios -> un ZIP.
+    """
+    formato = formato.lower()
+    catalogo = catalogo_graficos(serie)
+
+    archivos = []
+    for pedido in pedidos:
+        nombre = pedido["nombre"]
+        builder = catalogo.get(nombre)
+        if builder is None:
+            continue
+        fig = plt.figure(figsize=(float(pedido.get("ancho_cm", 25.4)) / 2.54,
+                                  float(pedido.get("alto_cm", 14.3)) / 2.54))
+        try:
+            builder(fig, pcs_max, iw_max)
+            buf = io.BytesIO()
+            fig.savefig(buf, format=formato, dpi=float(pedido.get("dpi", 200)),
+                        bbox_inches="tight", facecolor="white")
+            archivos.append((f"{_slug(nombre)}.{formato}", buf.getvalue()))
+        finally:
+            plt.close(fig)
+
+    if not archivos:
+        raise ValueError("Ningún gráfico seleccionado se pudo generar.")
+
+    if len(archivos) == 1:
+        nombre, contenido = archivos[0]
+        mime = "image/svg+xml" if formato == "svg" else "image/png"
+        return contenido, nombre, mime
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for nombre, contenido in archivos:
+            zf.writestr(nombre, contenido)
+    return buf.getvalue(), "graficos_presentacion.zip", "application/zip"
