@@ -781,6 +781,53 @@ def _aplicar_ampliaciones(params: dict) -> dict:
     return p
 
 
+def _propiedades_corrientes(plantas, tabla_total_hubs, propiedades, compuestos,
+                            ctes):
+    """z, densidad, PCS e IW del gas RESIDUAL de cada planta y del gas de
+    salida de cada hub. Misma cuenta que para las areas
+    (`calcular_propiedades_gas`), aplicada a estas corrientes.
+
+    OJO renormalizacion: `gas_residual_OUT` sale de io_plantas como
+    `gas_rico_IN * (1 - retenidos)` y suma MENOS que 1 (le falta lo retenido).
+    Para propiedades fisicas la composicion tiene que sumar 1 — los moles
+    retenidos ya no estan en la corriente — asi que aca se renormaliza. Las
+    fracciones x_ que ya se grafican salen del vector original: no se tocan.
+
+    Los hubs no retienen nada: su "salida" es la croma de tabla_total_hubs tal
+    cual (premisa de Cromas-HUBs o mezcla volumetrica), que ya suma ~1.
+    """
+    filas = []
+
+    for nombre, datos in plantas.items():
+        croma = datos.get("gas_residual_OUT")
+        if croma is None:
+            continue
+        croma = croma.reindex(compuestos).fillna(0.0)
+        total = float(croma.sum())
+        if total <= 0:
+            continue
+        filas.append({"Corriente": nombre, "Tipo": "gas residual planta",
+                      **(croma / total).to_dict()})
+
+    if tabla_total_hubs is not None and len(tabla_total_hubs):
+        # Un hub aparece una vez por destino con la MISMA croma: una fila por hub.
+        for _, f in tabla_total_hubs.drop_duplicates("Area").iterrows():
+            filas.append({"Corriente": str(f.get("HUB", f["Area"])),
+                          "Tipo": "salida de hub",
+                          **{c: float(f.get(c, 0.0)) for c in compuestos}})
+
+    columnas = ["Corriente", "Tipo"] + list(compuestos)
+    if not filas:
+        return pd.DataFrame(columns=columnas + ["z", "densidad", "PCS", "IW"])
+
+    tabla = pd.DataFrame(filas).reindex(columns=columnas).fillna(0.0)
+
+    return calcular_propiedades_gas(
+        tabla, propiedades, list(compuestos), ctes.PRESION_BASE,
+        ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE,
+        ctes.CONVERSION)
+
+
 def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
     # Las ampliaciones se resuelven ANTES de recargar config: el sandbox
     # siembra su registro de plantas desde config, y si config quedara con las
@@ -1060,12 +1107,24 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         },
     }
 
+    # Propiedades del gas de salida: residual de plantas + salida de hubs.
+    # Va a `tablas` (tab Tablas) y ademas se cuelga de cada planta para que
+    # `_fila_serie` las levante y el tab Graphs pueda graficarlas en el tiempo.
+    propiedades_corrientes = _propiedades_corrientes(
+        plantas, tabla_total_hubs, propiedades, ctes.COMPUESTOS, ctes)
+
+    for _, fila in propiedades_corrientes.iterrows():
+        if fila["Tipo"] == "gas residual planta" and fila["Corriente"] in plantas:
+            plantas[fila["Corriente"]]["propiedades_residual"] = {
+                k: float(fila[k]) for k in ("z", "densidad", "PCS", "IW")}
+
     return {
         "tablas": {
             "Total Yacimientos": tabla_total_yacimientos,
             "Total Flujos Directos": tabla_total_flujos_directos,
             "Total Detalles HUBs": tabla_total_detalles_hubs,
             "Total HUBs (ruteo)": tabla_total_hubs,
+            "Propiedades gas de salida": propiedades_corrientes,
         },
         "plantas": plantas,
         "flujos_plantas": flujos_plantas,
@@ -1166,6 +1225,12 @@ def _fila_serie(periodo, nombre_planta: str, datos: dict) -> dict:
 
     for compuesto, valor in _a_dict_compuestos(datos.get("gas_residual_OUT")).items():
         fila[f"x_{compuesto}"] = valor
+
+    # Propiedades del gas residual (composicion renormalizada), calculadas en
+    # ejecutar_pipeline. Columnas residual_z / residual_densidad / residual_PCS
+    # / residual_IW, una serie por planta para el tab Graphs.
+    for clave, valor in (datos.get("propiedades_residual") or {}).items():
+        fila[f"residual_{clave}"] = float(valor)
 
     for corte, valor in _totales_retenidos(datos.get("retenidos_vol")).items():
         fila[f"lgn_{corte}"] = valor
