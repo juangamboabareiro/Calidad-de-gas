@@ -684,6 +684,29 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
 
     plantas_df = serie["plantas"].copy()
     plantas_df["periodo"] = pd.to_datetime(plantas_df["periodo"])
+
+    # --- Reporte PDF: la misma serie, en láminas para imprimir/enviar ------
+    # Se genera bajo demanda (matplotlib redibuja todo) y el resultado queda
+    # en session_state para que el download_button sobreviva a los reruns.
+    c_rep1, c_rep2 = st.columns([1, 1])
+    if c_rep1.button("📄 Generar reporte PDF", key="btn_reporte_pdf",
+                     help="Arma las láminas del dashboard con la serie actual."):
+        try:
+            from ui.reporte_graphs import generar_reporte_pdf
+            with st.spinner("Armando el reporte..."):
+                st.session_state["reporte_pdf"] = generar_reporte_pdf(serie)
+        except ImportError:
+            st.error("Falta `matplotlib` para el reporte: agregalo a "
+                     "requirements.txt (`matplotlib`) y redeployá.")
+        except Exception as e:  # noqa: BLE001 - el reporte no puede tumbar el tab
+            st.error(f"No se pudo generar el reporte: {e}")
+    if st.session_state.get("reporte_pdf"):
+        c_rep2.download_button(
+            "⬇️ Descargar reporte_graphs.pdf",
+            data=st.session_state["reporte_pdf"],
+            file_name=f"reporte_graphs_{pd.Timestamp.now():%Y%m%d}.pdf",
+            mime="application/pdf", key="dl_reporte_pdf")
+    st.divider()
     areas = serie.get("areas", pd.DataFrame()).copy()
     pool = serie.get("pool", pd.DataFrame()).copy()
     mezcla = serie.get("mezcla", pd.DataFrame()).copy()

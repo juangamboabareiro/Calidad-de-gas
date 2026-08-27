@@ -685,6 +685,30 @@ PARAMS = {
 # ===========================================================================
 
 @st.cache_data(show_spinner=False)
+def _mapa_nombres_originales(path) -> dict:
+    """{area canonizada -> nombre original de la hoja}, para MOSTRAR.
+
+    El pipeline trabaja con claves canonizadas (minusculas, sin espacios ni
+    tildes) para que todo matchee entre hojas. Para presentar en graficos y
+    reportes, cada hoja se lee dos veces — canonizada y cruda, mismo orden de
+    filas — y se zipean las columnas Area. Es presentacion pura: ninguna
+    logica del modelo usa este mapa, asi que no puede romper ningun match.
+    """
+    mapa = {}
+    for loader in (load_yacimientos, load_flujos_directos,
+                   load_detalles_hubs, load_plantas_yacimientos):
+        try:
+            canon = loader(path)["Area"]
+            crudo = loader(path, canonizar_area=False)["Area"]
+        except Exception as e:  # noqa: BLE001 - una hoja rara no tumba el mapa
+            print(f"[nombres] no se pudo mapear una hoja: {e}")
+            continue
+        for clave, original in zip(canon, crudo):
+            if pd.notna(clave) and pd.notna(original):
+                mapa.setdefault(str(clave), str(original).strip())
+    return mapa
+
+
 def _cargar_hojas(path, _firma):
     """Las diez lecturas del Excel, cacheadas juntas.
 
@@ -711,6 +735,8 @@ def _cargar_hojas(path, _firma):
         # Opcional: None si el excel no tiene la hoja. El ruteo por hubs cae
         # entonces a la mezcla volumetrica de las areas de cada hub.
         "cromas_hubs": load_cromas_hubs(path),
+        # Presentacion pura: {area canonizada -> nombre original legible}.
+        "nombres_areas": _mapa_nombres_originales(path),
     }
 
 
@@ -1244,6 +1270,7 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         # Informe del ruteo por hubs: hubs ruteados / sin reparto, mapa
         # area->hub y volumen movido. Lo consume quien quiera (mapa, expander).
         "info_hubs": info_hubs,
+        "nombres_areas": hojas.get("nombres_areas") or {},
 
         # La mezcla que entra al sistema de transporte (volumenes en
         # MMm3/d y PCS/IW de la composicion mezclada). La consume la
@@ -1363,6 +1390,18 @@ def _fila_serie(periodo, nombre_planta: str, datos: dict) -> dict:
     return fila
 
 
+def _nombre_legible(area, hub, nombres: dict) -> str:
+    """Nombre para mostrar de un origen: el original de la hoja si existe;
+    para los nodos de hub (clave sintetica 'hub...'), la etiqueta del HUB."""
+    clave = str(area)
+    if clave in nombres:
+        return nombres[clave]
+    if hub is not None and pd.notna(hub) and str(hub) not in ("", "Otros") \
+            and clave.startswith("hub"):
+        return f"HUB {hub}"
+    return clave
+
+
 _ORIGEN_TABLAS_SERIE = {
     "Total Yacimientos": "yacimientos",
     "Total Detalles HUBs": "detalles_hubs",
@@ -1371,7 +1410,7 @@ _ORIGEN_TABLAS_SERIE = {
 }
 
 
-def _filas_areas_serie(periodo, resultado) -> list[dict]:
+def _filas_areas_serie(periodo, resultado, nombres: dict) -> list[dict]:
     """Detalle de inyeccion por (area, gasoducto) para serie["areas"].
 
     Sale de las tablas totales de la corrida: cada tabla aporta su etiqueta de
@@ -1388,7 +1427,7 @@ def _filas_areas_serie(periodo, resultado) -> list[dict]:
             filas.append({
                 "periodo": pd.Timestamp(periodo).normalize(),
                 "origen": origen,
-                "area": f.get("Area"),
+                "area": _nombre_legible(f.get("Area"), f.get("HUB"), nombres),
                 "gasoducto": f.get("Gasoducto"),
                 "volumen": None if pd.isna(vol) else float(vol) / FACTOR_MM,
                 "pcs": (float(f["PCS"]) if "PCS" in tabla.columns
@@ -1397,7 +1436,7 @@ def _filas_areas_serie(periodo, resultado) -> list[dict]:
     return filas
 
 
-def _filas_pool_serie(periodo, resultado) -> list[dict]:
+def _filas_pool_serie(periodo, resultado, nombres: dict) -> list[dict]:
     """El pool de cada planta abierto por origen, para serie["pool"].
 
     `vol_pool` es el gas antes del reparto; `vol_asignado`, la porcion que la
@@ -1414,7 +1453,7 @@ def _filas_pool_serie(periodo, resultado) -> list[dict]:
             filas.append({
                 "periodo": pd.Timestamp(periodo).normalize(),
                 "planta": nombre_planta,
-                "area": f.get("Area"),
+                "area": _nombre_legible(f.get("Area"), f.get("HUB"), nombres),
                 "vol_pool": None if pd.isna(pool) else float(pool) / FACTOR_MM,
                 "vol_asignado": (None if pd.isna(asignado)
                                  else float(asignado) / FACTOR_MM),
@@ -1462,8 +1501,9 @@ def ejecutar_serie(path, params, periodos):
         for nombre_planta, datos in resultado["plantas"].items():
             filas_plantas.append(_fila_serie(periodo, nombre_planta, datos))
 
-        filas_areas.extend(_filas_areas_serie(periodo, resultado))
-        filas_pool.extend(_filas_pool_serie(periodo, resultado))
+        nombres = resultado.get("nombres_areas") or {}
+        filas_areas.extend(_filas_areas_serie(periodo, resultado, nombres))
+        filas_pool.extend(_filas_pool_serie(periodo, resultado, nombres))
 
         # Esquema garantizado: aunque un mes venga sin mezcla_transporte,
         # la fila lleva todas las columnas (en None). Sin esto, un DataFrame
