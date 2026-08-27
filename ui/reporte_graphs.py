@@ -37,8 +37,8 @@ matplotlib.use("Agg")  # backend sin display: corre en el server
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-# A4 apaisado en pulgadas.
-_HOJA = (11.69, 8.27)
+# A4 vertical (retrato) en pulgadas.
+_HOJA = (8.27, 11.69)
 _COLORES_TPE = {"MEGA": "#1F3B5C", "TTY": "#2E86C1",
                 "Directo a gasoducto": "#5D8233"}
 _CORTES = {"lgn_etano": "C2", "lgn_propano": "C3",
@@ -155,7 +155,7 @@ def _lam_portada(fig, plantas_df, mezcla):
 
 
 def _lam_transporte(fig, mezcla, pcs_max, iw_max):
-    ax1, ax2 = fig.subplots(1, 2)
+    ax1, ax2 = fig.subplots(2, 1)
     fig.suptitle("Lámina objetivo — sistema de transporte", fontsize=12,
                  fontweight="bold")
 
@@ -199,7 +199,7 @@ def _lam_produccion(fig, areas):
     if not presentes:
         fig.text(0.5, 0.5, "La serie no trae detalle por área.", ha="center")
         return
-    ejes = fig.subplots(1, len(presentes), squeeze=False)[0]
+    ejes = fig.subplots(len(presentes), 1, squeeze=False)[:, 0]
     for ax, (origen, titulo) in zip(ejes, presentes):
         df = areas[(areas["origen"] == origen) & areas["volumen"].notna()]
         _apilada(ax, _top_n_mas_otros(df, "area", "volumen", 10),
@@ -215,7 +215,7 @@ def _lam_gasoductos(fig, areas):
         return
     top = (df.groupby("gasoducto")["volumen"].sum()
              .sort_values(ascending=False).head(4).index.tolist())
-    ejes = fig.subplots(2, 2).ravel()
+    ejes = fig.subplots(4, 1).ravel()
     for ax, gd in zip(ejes, top):
         _apilada(ax, _top_n_mas_otros(df[df["gasoducto"] == gd],
                                       "area", "volumen", 8),
@@ -245,7 +245,7 @@ def _lam_calidad_gasoducto(fig, areas):
 
 
 def _lam_tratamiento(fig, plantas_df):
-    ax1, ax2 = fig.subplots(1, 2)
+    ax1, ax2 = fig.subplots(2, 1)
     fig.suptitle("Tratamiento", fontsize=12, fontweight="bold")
 
     partes = []
@@ -279,13 +279,13 @@ def _lam_pcs_iw(fig, plantas_df, pcs_max, iw_max):
         fig.text(0.5, 0.5, "La serie no trae PCS/IW por planta.", ha="center")
         return
     nombres = sorted(plantas_df["planta"].unique())
-    ejes = fig.subplots(2, len(nombres), squeeze=False)
+    ejes = fig.subplots(len(nombres), 2, squeeze=False)
     for j, planta in enumerate(nombres):
         d = plantas_df[plantas_df["planta"] == planta]
         for i, (cin, cout, tit, mx) in enumerate(
                 (("pcs_in", "pcs_out", "PCS", pcs_max),
                  ("iw_in", "iw_out", "IW", iw_max))):
-            ax = ejes[i][j]
+            ax = ejes[j][i]
             vv = [c for c in (cin, cout) if c in d.columns]
             largo = d.melt(id_vars="periodo", value_vars=vv, var_name="serie",
                            value_name="valor").dropna(subset=["valor"])
@@ -303,7 +303,7 @@ def _lam_caudal_capacidad(fig, plantas_df):
     fig.suptitle("Caudal disponible vs capacidad de ingreso", fontsize=12,
                  fontweight="bold")
     nombres = sorted(plantas_df["planta"].unique())
-    ejes = fig.subplots(1, len(nombres), squeeze=False)[0]
+    ejes = fig.subplots(len(nombres), 1, squeeze=False)[:, 0]
     for ax, planta in zip(ejes, nombres):
         d = plantas_df[plantas_df["planta"] == planta].sort_values("periodo")
         if d["vol_disponible"].notna().any():
@@ -340,8 +340,8 @@ def _lam_resumen_anual(fig, plantas_df):
     tabla = ax.table(cellText=celdas, rowLabels=list(disponibles),
                      colLabels=columnas, loc="center", cellLoc="right")
     tabla.auto_set_font_size(False)
-    tabla.set_fontsize(7.5)
-    tabla.scale(1.0, 1.5)
+    tabla.set_fontsize(6.5)
+    tabla.scale(1.0, 1.4)
 
 
 # ===========================================================================
