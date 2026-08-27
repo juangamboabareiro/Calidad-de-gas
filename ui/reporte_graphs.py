@@ -130,18 +130,19 @@ def _pagina_titulo(pdf, fig_fn):
 # Láminas
 # ===========================================================================
 
-def _lam_portada(fig, plantas_df, mezcla):
+def _lam_portada(fig, plantas_df, mezcla, unidad_label="MMm³/d STD"):
     fig.text(0.5, 0.62, "Balance de Gas — Reporte", ha="center",
              fontsize=26, fontweight="bold")
     per = pd.to_datetime(plantas_df["periodo"])
     rango = f"{per.min():%m-%Y} a {per.max():%m-%Y}  ·  {per.nunique()} período(s)"
     fig.text(0.5, 0.54, rango, ha="center", fontsize=13)
-    fig.text(0.5, 0.48, f"Generado el {datetime.now():%d-%m-%Y %H:%M}",
+    fig.text(0.5, 0.48, f"Generado el {datetime.now():%d-%m-%Y %H:%M}  ·  "
+                        f"Volúmenes en {unidad_label}",
              ha="center", fontsize=10, color="#555555")
 
     lineas = []
     tratado = plantas_df.groupby("periodo")["vol_asignado"].sum().mean()
-    lineas.append(f"Gas tratado promedio: {tratado:,.2f} MMm3/d")
+    lineas.append(f"Gas tratado promedio: {tratado:,.2f} ({unidad_label})")
     if "lgn_asignado" in plantas_df.columns:
         lgn = plantas_df.groupby("periodo")["lgn_asignado"].sum().mean()
         lineas.append(f"LGN promedio: {lgn:,.0f} tn/d")
@@ -349,7 +350,8 @@ def _lam_resumen_anual(fig, plantas_df):
 # ===========================================================================
 
 def generar_reporte_pdf(serie: dict, pcs_max: float = 10_700.0,
-                        iw_max: float = 13_000.0) -> bytes:
+                        iw_max: float = 13_000.0,
+                        unidad_label: str = "MMm³/d STD") -> bytes:
     """Arma el PDF completo a partir del dict `serie` de ejecutar_serie.
 
     Devuelve los bytes del PDF, listos para `st.download_button`. Las láminas
@@ -370,7 +372,8 @@ def generar_reporte_pdf(serie: dict, pcs_max: float = 10_700.0,
 
     buf = io.BytesIO()
     with PdfPages(buf) as pdf:
-        _pagina_titulo(pdf, lambda f: _lam_portada(f, plantas_df, mezcla))
+        _pagina_titulo(pdf, lambda f: _lam_portada(f, plantas_df, mezcla,
+                                                   unidad_label))
         if len(mezcla):
             _pagina_titulo(pdf, lambda f: _lam_transporte(f, mezcla, pcs_max, iw_max))
         if len(areas):

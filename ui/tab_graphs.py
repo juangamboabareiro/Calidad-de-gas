@@ -82,7 +82,7 @@ def _slug(texto) -> str:
 def _descargar_csv(df: pd.DataFrame, nombre: str, key: str):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
-    st.download_button(f"{nombre}.csv", data=buf.getvalue(),
+    st.download_button(f"⬇️ {nombre}.csv", data=buf.getvalue(),
                        file_name=f"{nombre}.csv", mime="text/csv", key=key)
 
 
@@ -327,7 +327,7 @@ def _g_prhc(mezcla: pd.DataFrame):
     excesos = df[df["valor"] > limite]
     if len(excesos):
         primero = excesos["periodo"].min()
-        st.warning(f"La mezcla supera el límite de {limite:g}°C en "
+        st.warning(f"⚠️ La mezcla supera el límite de {limite:g}°C en "
                    f"{len(excesos)} período(s), desde "
                    f"{pd.Timestamp(primero).strftime('%m-%Y')}.")
 
@@ -634,7 +634,7 @@ def _tabla_resumen_anual(plantas_df: pd.DataFrame):
 def _sin_serie(resultados: dict):
     st.info(
         "Todavía no hay serie temporal calculada. Cargá el rango en la barra "
-        "lateral (**7. Serie temporal**) y apretá **Calcular serie**: los "
+        "lateral (**7. Serie temporal**) y apretá **📈 Calcular serie**: los "
         "gráficos del dashboard salen de ahí."
     )
 
@@ -662,6 +662,111 @@ def _sin_serie(resultados: dict):
 # Panel
 # ===========================================================================
 
+_REF_9300 = 9_300.0
+_UNIDAD_9300 = "MMm³/d de 9.300 kcal"
+_UNIDAD_STD = "MMm³/d STD"
+
+# Columnas volumétricas de serie["plantas"] que se expresan en la unidad
+# elegida. Todas son gas del pool (rico), asi que convierten con pcs_in;
+# la capacidad de ingreso tambien, para que el grafico caudal-vs-capacidad
+# compare peras con peras en terminos de energia.
+_COLS_VOL_PLANTAS = ("vol_disponible", "vol_maximo", "vol_asignado",
+                     "sobrante", "vol_derivado", "bypass", "capacidad_ingreso")
+
+
+def _serie_en_9300(serie: dict):
+    """Convierte los volúmenes de la serie de STD a equivalentes de 9.300 kcal.
+
+    V_9300 = V_STD x PCS / 9300, con el PCS PROPIO de cada corriente: un gas
+    mas rico rinde mas metros equivalentes. Fuentes del PCS: filas de areas ->
+    su columna pcs; plantas -> pcs_in (todo lo convertido es gas del pool);
+    pool -> el pcs_in de su (planta, periodo); mezcla -> el pcs de la mezcla.
+
+    Filas sin PCS quedan en NaN (fuera de la vista) en vez de mezclarse en
+    otra unidad sin avisar. Devuelve (serie_convertida, avisos).
+    """
+    avisos = []
+    plantas = serie.get("plantas", pd.DataFrame()).copy()
+    areas = serie.get("areas", pd.DataFrame()).copy()
+    pool = serie.get("pool", pd.DataFrame()).copy()
+    mezcla = serie.get("mezcla", pd.DataFrame()).copy()
+
+    # La conversion necesita PCS en kcal/m3. Si Constantes-GAS vino con
+    # Conversion=1000, los PCS estan en MJ/m3 (~40) y dividir por 9300 daria
+    # basura: mejor no convertir y decirlo.
+    pcs_ref = pd.concat([plantas.get("pcs_in", pd.Series(dtype=float)),
+                         areas.get("pcs", pd.Series(dtype=float))]).dropna()
+    if len(pcs_ref) and pcs_ref.median() < 1000:
+        return serie, ["Los PCS de la serie no están en kcal/m³ (¿Conversion="
+                       "1000 en Constantes-GAS?): se muestra en STD."]
+
+    if len(plantas):
+        if "pcs_in" in plantas.columns and plantas["pcs_in"].notna().any():
+            factor = plantas["pcs_in"] / _REF_9300
+            for col in _COLS_VOL_PLANTAS:
+                if col in plantas.columns:
+                    plantas[col] = plantas[col] * factor
+            sin = int(plantas["pcs_in"].isna().sum())
+            if sin:
+                avisos.append(f"{sin} fila(s) de plantas sin PCS quedaron "
+                              "fuera de la vista 9.300.")
+        else:
+            avisos.append("La serie de plantas no trae pcs_in: sus volúmenes "
+                          "quedaron fuera de la vista 9.300 (recalculá la serie).")
+            for col in _COLS_VOL_PLANTAS:
+                if col in plantas.columns:
+                    plantas[col] = pd.NA
+
+    if len(areas) and "volumen" in areas.columns:
+        if "pcs" in areas.columns:
+            # La mascara va ANTES de convertir: despues, el volumen de las
+            # filas sin PCS ya es NaN y el contador daria siempre cero.
+            sin_pcs = areas["pcs"].isna() & areas["volumen"].notna()
+            areas["volumen"] = areas["volumen"] * areas["pcs"] / _REF_9300
+            if sin_pcs.any():
+                avisos.append(f"{int(sin_pcs.sum())} fila(s) de áreas sin PCS "
+                              "quedaron fuera de la vista 9.300.")
+        else:
+            areas["volumen"] = pd.NA
+
+    if len(pool) and len(plantas) and "pcs_in" in plantas.columns:
+        # El pool convierte con el pcs_in de su planta en ese periodo.
+        clave = plantas[["periodo", "planta", "pcs_in"]].drop_duplicates()
+        pool = pool.merge(clave, on=["periodo", "planta"], how="left")
+        for col in ("vol_pool", "vol_asignado"):
+            if col in pool.columns:
+                pool[col] = pool[col] * pool["pcs_in"] / _REF_9300
+        pool = pool.drop(columns=["pcs_in"])
+
+    if len(mezcla) and "pcs" in mezcla.columns:
+        f = mezcla["pcs"] / _REF_9300
+        for col in ("vol_mega", "vol_tty", "vol_directo_a_gasoducto"):
+            if col in mezcla.columns:
+                mezcla[col] = mezcla[col] * f
+
+    return ({"plantas": plantas, "areas": areas, "pool": pool,
+             "mezcla": mezcla}, avisos)
+
+
+def _selector_unidad(serie: dict):
+    """Radio de unidad + conversión. Devuelve (serie_en_unidad, etiqueta)."""
+    unidad = st.radio(
+        "Unidad de volúmenes", [_UNIDAD_9300, _UNIDAD_STD], horizontal=True,
+        key="unidad_volumen",
+        help="STD: metros cúbicos físicos en condiciones estándar. 9.300 kcal: "
+             "metros cúbicos equivalentes en energía (V₉₃₀₀ = V_STD × PCS/9300, "
+             "con el PCS propio de cada corriente), la unidad contractual.")
+    if unidad == _UNIDAD_STD:
+        st.caption(f"Todos los volúmenes expresados en **{_UNIDAD_STD}**.")
+        return serie, _UNIDAD_STD
+    convertida, avisos = _serie_en_9300(serie)
+    for aviso in avisos:
+        st.warning(aviso)
+    etiqueta = _UNIDAD_STD if convertida is serie else _UNIDAD_9300
+    st.caption(f"Todos los volúmenes expresados en **{etiqueta}**.")
+    return convertida, etiqueta
+
+
 def panel_graphs(resultados: dict, serie: dict | None = None,
                  fallos: list | None = None):
     if alt is None:
@@ -682,6 +787,8 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
         _sin_serie(resultados)
         return
 
+    serie, unidad_volumen = _selector_unidad(serie)
+
     plantas_df = serie["plantas"].copy()
     plantas_df["periodo"] = pd.to_datetime(plantas_df["periodo"])
 
@@ -689,12 +796,13 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
     # Se genera bajo demanda (matplotlib redibuja todo) y el resultado queda
     # en session_state para que el download_button sobreviva a los reruns.
     c_rep1, c_rep2 = st.columns([1, 1])
-    if c_rep1.button("Generar reporte PDF", key="btn_reporte_pdf",
+    if c_rep1.button("📄 Generar reporte PDF", key="btn_reporte_pdf",
                      help="Arma las láminas del dashboard con la serie actual."):
         try:
             from ui.reporte_graphs import generar_reporte_pdf
             with st.spinner("Armando el reporte..."):
-                st.session_state["reporte_pdf"] = generar_reporte_pdf(serie)
+                st.session_state["reporte_pdf"] = generar_reporte_pdf(
+                    serie, unidad_label=unidad_volumen)
         except ImportError:
             st.error("Falta `matplotlib` para el reporte: agregalo a "
                      "requirements.txt (`matplotlib`) y redeployá.")
@@ -702,12 +810,12 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
             st.error(f"No se pudo generar el reporte: {e}")
     if st.session_state.get("reporte_pdf"):
         c_rep2.download_button(
-            "Descargar reporte_graphs.pdf",
+            "⬇️ Descargar reporte_graphs.pdf",
             data=st.session_state["reporte_pdf"],
             file_name=f"reporte_graphs_{pd.Timestamp.now():%Y%m%d}.pdf",
             mime="application/pdf", key="dl_reporte_pdf")
 
-    with st.expander("Exportar gráficos sueltos (para presentaciones)"):
+    with st.expander("🖼️ Exportar gráficos sueltos (para presentaciones)"):
         try:
             from ui.reporte_graphs import catalogo_graficos, exportar_graficos
             _catalogo = list(catalogo_graficos(serie))
@@ -749,7 +857,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
                         "DPI": st.column_config.NumberColumn(
                             min_value=72, max_value=600, step=10),
                     })
-                if st.button("Generar", key="btn_exportar_graficos"):
+                if st.button("🖼️ Generar", key="btn_exportar_graficos"):
                     pedidos = [{"nombre": f["Gráfico"],
                                 "ancho_cm": f["Ancho [cm]"],
                                 "alto_cm": f["Alto [cm]"],
@@ -763,7 +871,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
                         st.error(f"No se pudo exportar: {e}")
                 if st.session_state.get("export_graficos"):
                     contenido, nombre, mime = st.session_state["export_graficos"]
-                    st.download_button(f"Descargar {nombre}", data=contenido,
+                    st.download_button(f"⬇️ Descargar {nombre}", data=contenido,
                                        file_name=nombre, mime=mime,
                                        key="dl_export_graficos")
     st.divider()
