@@ -802,7 +802,20 @@ def _propiedades_corrientes(plantas, tabla_total_hubs, propiedades, compuestos,
         croma = datos.get("gas_residual_OUT")
         if croma is None:
             continue
-        croma = croma.reindex(compuestos).fillna(0.0)
+
+        # Segun como vengan los retenidos (Serie o DataFrame de una columna),
+        # gas_rico_IN * (1 - retenidos) devuelve Serie o DataFrame. Mismo caso
+        # que resuelve _fila_derivacion en planta_template: se aplana con
+        # squeeze. Si aun asi queda 2D (dos dimensiones reales), no hay una
+        # unica composicion que calcular y se saltea con aviso.
+        if isinstance(croma, pd.DataFrame):
+            croma = croma.squeeze()
+        if not isinstance(croma, pd.Series):
+            print(f"[propiedades_corrientes] gas_residual_OUT de {nombre} "
+                  "no es un vector: se omite")
+            continue
+
+        croma = pd.to_numeric(croma.reindex(compuestos), errors="coerce").fillna(0.0)
         total = float(croma.sum())
         if total <= 0:
             continue
