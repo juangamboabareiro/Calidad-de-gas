@@ -153,6 +153,134 @@ def _regla_maximo(valor, texto):
 
 
 # ===========================================================================
+# Lámina objetivo: inyección a transporte, calidad de la mezcla y PRHC
+# ===========================================================================
+
+def _g_inyeccion_tpe(mezcla: pd.DataFrame):
+    st.markdown("### Inyección a sistema de tpe [MMm3/d STD]")
+    st.caption(
+        "Salida de plantas (residual) + gas que va directo al sistema. En el "
+        "modelo, «Directo a gasoducto» es el bypass de la cascada: gas del "
+        "pool que ninguna planta trató. La inyección de áreas que nunca pasan "
+        "por un pool no está clasificada como transporte vs. alimentación de "
+        "planta, así que no se incluye acá."
+    )
+
+    cols_vol = [c for c in mezcla.columns if c.startswith("vol_")]
+    if not cols_vol:
+        st.info("La serie no trae los volúmenes de la mezcla.")
+        return
+
+    etiquetas = {"vol_mega": "MEGA", "vol_tty": "TTY",
+                 "vol_directo_a_gasoducto": "Directo a gasoducto"}
+    largo = mezcla.melt(id_vars="periodo", value_vars=cols_vol,
+                        var_name="serie", value_name="valor").dropna(subset=["valor"])
+    largo["serie"] = largo["serie"].map(
+        lambda c: etiquetas.get(c, c.removeprefix("vol_").replace("_", " ")))
+
+    # Orden de la lámina: MEGA abajo, TTY al medio, directo arriba.
+    orden = ["MEGA", "TTY", "Directo a gasoducto"]
+    orden += [s for s in largo["serie"].unique() if s not in orden]
+    colores = alt.Scale(domain=orden,
+                        range=["#1F3B5C", "#2E86C1", "#5D8233"][:len(orden)]) \
+        if set(largo["serie"]) <= set(orden[:3]) else alt.Undefined
+
+    grafico = (
+        alt.Chart(largo)
+        .mark_area(opacity=0.9)
+        .encode(
+            x=_eje_tiempo(),
+            y=alt.Y("valor:Q", title="MMm3/d", stack="zero"),
+            color=alt.Color("serie:N", title=None, sort=orden, scale=colores),
+            order=alt.Order("serie:N"),
+            tooltip=[alt.Tooltip("periodo:T", format="%m-%Y", title="Período"),
+                     alt.Tooltip("serie:N", title=""),
+                     alt.Tooltip("valor:Q", format=",.2f", title="MMm3/d")],
+        )
+        .properties(height=340)
+        .interactive()
+    )
+    st.altair_chart(grafico, use_container_width=True)
+
+
+def _g_calidad_mezcla(mezcla: pd.DataFrame):
+    if mezcla["pcs"].notna().sum() == 0:
+        st.caption("ℹ️ Sin PCS por compuesto en `propiedades`: se omite "
+                   "«Calidad del gas» de la mezcla.")
+        return
+
+    st.markdown("### Calidad del gas [kcal/m3]")
+    st.caption("PCS e Índice de Wobbe de la mezcla total inyectada a "
+               "transporte (salidas de planta + bypass, ponderada por "
+               "volumen; el IW se calcula sobre la composición mezclada, no "
+               "promediando IWs).")
+
+    c1, c2 = st.columns(2)
+    pcs_max = c1.number_input("PCS MAX [kcal/m3]", value=10_700.0, step=50.0,
+                              key="g_mez_pcs_max",
+                              help="0 = no mostrar la línea.")
+    iw_max = c2.number_input("IW MAX [kcal/m3]", value=13_000.0, step=50.0,
+                             key="g_mez_iw_max", help="0 = no mostrar la línea.")
+
+    largo = mezcla.melt(id_vars="periodo", value_vars=["pcs", "iw"],
+                        var_name="serie", value_name="valor").dropna(subset=["valor"])
+    largo["serie"] = largo["serie"].map({"pcs": "PCS [kcal/m3]", "iw": "IW"})
+
+    colores = alt.Scale(domain=["PCS [kcal/m3]", "IW"],
+                        range=["#1E8449", "#9B59B6"])
+    grafico = (
+        alt.Chart(largo)
+        .mark_line(strokeWidth=2.5)
+        .encode(
+            x=_eje_tiempo(),
+            y=alt.Y("valor:Q", title="kcal/m3", scale=alt.Scale(zero=False)),
+            color=alt.Color("serie:N", title=None, scale=colores),
+            tooltip=[alt.Tooltip("periodo:T", format="%m-%Y", title="Período"),
+                     alt.Tooltip("serie:N", title=""),
+                     alt.Tooltip("valor:Q", format=",.0f", title="kcal/m3")],
+        )
+        .properties(height=340)
+    )
+    if pcs_max > 0:
+        grafico = grafico + _regla_maximo(pcs_max, "PCS MAX")
+    if iw_max > 0:
+        grafico = grafico + _regla_maximo(iw_max, "IW MAX")
+    st.altair_chart(grafico.interactive(), use_container_width=True)
+
+
+def _g_prhc(mezcla: pd.DataFrame):
+    st.markdown("### PRHC de la mezcla [°C]")
+
+    if "prhc" not in mezcla.columns or mezcla["prhc"].notna().sum() == 0:
+        st.info(
+            "El punto de rocío de hidrocarburos requiere un flash con "
+            "ecuación de estado y el modelo todavía no lo calcula — no se "
+            "grafica un número inventado. Para activar este gráfico, creá "
+            "`domain/prhc.py` con una función "
+            "`calcular_prhc(fracciones: pd.Series) -> float` (°C, fracciones "
+            "molares normalizadas indexadas por compuesto): la serie la "
+            "detecta sola y el gráfico aparece con su línea de límite."
+        )
+        return
+
+    limite = st.number_input("Límite PRHC [°C]", value=-4.0, step=0.5,
+                             key="g_prhc_limite")
+
+    df = mezcla.dropna(subset=["prhc"]).rename(columns={"prhc": "valor"})
+    df["serie"] = "Mezcla con salida de plantas"
+    grafico = _lineas(df, "serie", "valor", "°C", fmt=",.1f")
+    grafico = grafico + _regla_maximo(limite, f"Límite PRHC {limite:g}°C")
+    st.altair_chart(grafico, use_container_width=True)
+
+    excesos = df[df["valor"] > limite]
+    if len(excesos):
+        primero = excesos["periodo"].min()
+        st.warning(f"⚠️ La mezcla supera el límite de {limite:g}°C en "
+                   f"{len(excesos)} período(s), desde "
+                   f"{pd.Timestamp(primero).strftime('%m-%Y')}.")
+
+
+# ===========================================================================
 # Producción
 # ===========================================================================
 
@@ -485,7 +613,8 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
     plantas_df["periodo"] = pd.to_datetime(plantas_df["periodo"])
     areas = serie.get("areas", pd.DataFrame()).copy()
     pool = serie.get("pool", pd.DataFrame()).copy()
-    for df in (areas, pool):
+    mezcla = serie.get("mezcla", pd.DataFrame()).copy()
+    for df in (areas, pool, mezcla):
         if "periodo" in df.columns:
             df["periodo"] = pd.to_datetime(df["periodo"])
 
@@ -493,6 +622,15 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
         st.warning("La serie tiene un solo período: los gráficos van a "
                    "mostrar una sola columna. Ampliá el rango en la barra "
                    "lateral.")
+
+    # --- Lámina objetivo: sistema de transporte ---------------------------
+    if not mezcla.empty:
+        _g_inyeccion_tpe(mezcla)
+        st.divider()
+        _g_calidad_mezcla(mezcla)
+        st.divider()
+        _g_prhc(mezcla)
+        st.divider()
 
     # --- Producción ------------------------------------------------------
     if not areas.empty:
@@ -519,7 +657,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
     _tabla_resumen_anual(plantas_df)
 
     with st.expander("Descargar los datos de la serie"):
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             _descargar_csv(plantas_df, "serie_plantas", key="dl_sp")
         with c2:
@@ -528,3 +666,6 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
         with c3:
             if not pool.empty:
                 _descargar_csv(pool, "serie_pool", key="dl_spool")
+        with c4:
+            if not mezcla.empty:
+                _descargar_csv(mezcla, "serie_mezcla", key="dl_smez")

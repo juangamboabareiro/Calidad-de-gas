@@ -885,6 +885,96 @@ def _pcs_iw(fracciones, propiedades):
     return pcs, iw
 
 
+# Hook para el punto de rocio de hidrocarburos de la mezcla (grafico "PRHC"
+# de la lamina objetivo). Calcularlo bien requiere un flash con ecuacion de
+# estado; inventar una correlacion aca daria numeros que parecen reales y no
+# lo son. Si el proyecto expone `domain/prhc.py` con
+#
+#     def calcular_prhc(fracciones: pd.Series) -> float   # °C
+#
+# (fracciones molares normalizadas, indexadas por compuesto), la serie lo usa
+# y el grafico aparece solo. Mientras no exista, el tab muestra como activarlo.
+try:
+    from domain.prhc import calcular_prhc
+except ImportError:
+    calcular_prhc = None
+
+
+def _grupo_planta(nombre: str) -> str:
+    """'TTY - TBX' y 'TTY - Dew Point' -> 'TTY'; el resto queda como esta.
+    Es el agrupamiento de la lamina: MEGA / TTY / Directo a gasoducto."""
+    if "TTY" in str(nombre).upper():
+        return "TTY"
+    return str(nombre)
+
+
+def _fila_mezcla(periodo, resultado, propiedades) -> dict:
+    """La corriente que entra al sistema de transporte en un periodo.
+
+    Se compone de:
+      - la SALIDA de cada planta: vol_asignado por la fraccion residual
+        (suma de gas_residual_OUT), con la composicion residual normalizada;
+      - el BYPASS de cada planta, con la composicion del POOL (gas_rico_IN):
+        es gas que no se trato, asi que sale con la cromato de entrada.
+
+    El vol_derivado NO se suma: ya esta contado como disponible del eslabon
+    siguiente (seria contar el mismo gas dos veces).
+
+    La mezcla molar se pondera por volumen y de ahi salen PCS, IW y (si hay
+    hook) el PRHC. El PCS ponderar por volumen es exacto; el IW se calcula
+    sobre la composicion mezclada, no promediando IWs (no es lineal).
+    """
+    ts = pd.Timestamp(periodo).normalize()
+    corrientes = []          # (volumen, Series de fracciones normalizadas)
+    vol_grupos = {}          # 'MEGA' / 'TTY' / 'Directo a gasoducto'
+
+    for nombre_planta, datos in resultado.get("plantas", {}).items():
+        flujos = datos["flujos"]
+        grupo = _grupo_planta(nombre_planta)
+
+        residual = _a_dict_compuestos(datos.get("gas_residual_OUT"))
+        fraccion_residual = sum(residual.values()) if residual else 0.0
+        vol_salida = _a_mm(flujos["vol_asignado"])
+        if residual and fraccion_residual > 0 and vol_salida:
+            vol_salida = vol_salida * fraccion_residual
+            corrientes.append(
+                (vol_salida, pd.Series(residual, dtype=float) / fraccion_residual))
+            vol_grupos[grupo] = vol_grupos.get(grupo, 0.0) + vol_salida
+
+        rico = _a_dict_compuestos(datos.get("gas_rico_IN"))
+        vol_bp = _a_mm(flujos["bypass"])
+        if rico and vol_bp and vol_bp > 0:
+            corrientes.append((vol_bp, pd.Series(rico, dtype=float)))
+            vol_grupos["Directo a gasoducto"] = (
+                vol_grupos.get("Directo a gasoducto", 0.0) + vol_bp)
+
+    fila = {"periodo": ts, "pcs": None, "iw": None, "prhc": None}
+    for grupo, vol in vol_grupos.items():
+        fila[f"vol_{_normalizar_clave(grupo)}"] = vol
+
+    vol_total = sum(v for v, _ in corrientes)
+    if vol_total > 0:
+        mezcla = pd.Series(dtype=float)
+        for vol, x in corrientes:
+            mezcla = mezcla.add(x * (vol / vol_total), fill_value=0.0)
+
+        fila["pcs"], fila["iw"] = _pcs_iw(mezcla, propiedades)
+
+        if calcular_prhc is not None:
+            try:
+                fila["prhc"] = float(calcular_prhc(mezcla))
+            except Exception as e:
+                # Un mes con composicion rara no debe tirar toda la serie.
+                print(f"[serie:{ts:%m-%Y}] calcular_prhc fallo: {e}")
+
+    return fila
+
+
+def _normalizar_clave(texto: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", "_", str(texto).lower()).strip("_")
+
+
 def _totales_retenidos(retenidos_vol) -> dict:
     if not isinstance(retenidos_vol, pd.DataFrame):
         return {}
@@ -996,7 +1086,7 @@ def ejecutar_serie(path, params, periodos):
     Es habitual que falten datos de inyeccion para algun periodo del rango y no
     tiene sentido perder los otros 23 por eso.
     """
-    filas_plantas, filas_areas, filas_pool, fallos = [], [], [], []
+    filas_plantas, filas_areas, filas_pool, filas_mezcla, fallos = [], [], [], [], []
     barra = st.sidebar.progress(0.0, text="Calculando serie...")
 
     for i, periodo in enumerate(periodos, start=1):
@@ -1019,12 +1109,14 @@ def ejecutar_serie(path, params, periodos):
 
         filas_areas.extend(_filas_areas(periodo, resultado))
         filas_pool.extend(_filas_pool(periodo, resultado))
+        filas_mezcla.append(_fila_mezcla(periodo, resultado, propiedades))
 
     barra.empty()
     serie = {
         "plantas": pd.DataFrame(filas_plantas),
         "areas": pd.DataFrame(filas_areas),
         "pool": pd.DataFrame(filas_pool),
+        "mezcla": pd.DataFrame(filas_mezcla),
     }
     return serie, fallos
 
