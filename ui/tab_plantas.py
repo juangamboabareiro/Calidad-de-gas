@@ -150,7 +150,7 @@ def _barra_acciones(registro, factor_mm):
 
     with col_bajar:
         st.download_button(
-            "⬇️ Descargar simulación",
+            "Descargar simulación",
             data=armar_zip(
                 registro=registro,
                 intervenciones=obtener_intervenciones(),
@@ -229,7 +229,7 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
     """Editor + botón de correr. Se envuelve en un fragment (ver abajo)."""
 
     sub_plantas, sub_ductos, sub_escenarios = st.tabs(
-        ["🏭 Plantas", "🛢️ Gasoductos", "📁 Escenarios"])
+        ["Plantas", "Gasoductos", "Escenarios"])
 
     with sub_plantas:
         registro, errores, _ = panel_plantas(
@@ -253,7 +253,7 @@ def _cuerpo_editor(retenidos_rtp, compuestos, params, tbx_en_servicio,
 
     st.divider()
     correr = st.button(
-        "▶️ Resolver cascada", type="primary", **ancho(),
+        "Resolver cascada", type="primary", **ancho(),
         disabled=bool(errores), key="btn_correr_sandbox")
 
     if errores:
@@ -334,7 +334,7 @@ def _bloque_ductos(informe, factor_mm):
     if tabla.empty:
         return
 
-    with st.expander(f"🛢️ {len(tabla)} intervención(es) sobre los ductos", expanded=True):
+    with st.expander(f"{len(tabla)} intervención(es) sobre los ductos", expanded=True):
         vista = arrow_safe(tabla.copy())
         if "Volumen" in vista.columns:
             vista["Volumen"] = pd.to_numeric(vista["Volumen"], errors="coerce") / factor_mm
@@ -381,7 +381,7 @@ def _bloque_impacto(flujos_sandbox, flujos_produccion, factor_mm):
     for nombre in nuevas:
         despues = float(flujos_sandbox.loc[nombre, "vol_asignado"])
         filas.append({
-            "Planta": f"➕ {nombre}",
+            "Planta": f"{nombre} (nueva)",
             "Gas tratado antes": 0.0,
             "Gas tratado después": despues / factor_mm,
             "Δ": despues / factor_mm,
@@ -393,7 +393,7 @@ def _bloque_impacto(flujos_sandbox, flujos_produccion, factor_mm):
 
     tabla = pd.DataFrame(filas).sort_values("Δ", ascending=False)
 
-    with st.expander("📊 Impacto por planta", expanded=True):
+    with st.expander("Impacto por planta", expanded=True):
         st.dataframe(
             tabla.style.format({
                 "Gas tratado antes": "{:,.2f}", "Gas tratado después": "{:,.2f}",
@@ -439,7 +439,7 @@ def _bloque_control(flujos_sandbox, flujos_produccion, factor_mm):
 
     if coincide:
         st.success(
-            f"✅ Control: las {len(comunes_idx)} plantas base dan **idéntico** "
+            f"Control: las {len(comunes_idx)} plantas base dan **idéntico** "
             f"a la cascada oficial (desvío máx. {peor:.2e})."
             + (" Las plantas agregadas no las alteraron." if modificado else ""))
     else:
@@ -454,7 +454,7 @@ def _bloque_control(flujos_sandbox, flujos_produccion, factor_mm):
                      "pasar**: es un bug de esta capa, y no le creas a ningún "
                      "escenario que armes encima.")
         st.warning(
-            f"⚠️ Control: las plantas base difieren de la cascada oficial en "
+            f"Control: las plantas base difieren de la cascada oficial en "
             f"hasta {peor / factor_mm:,.4f} (MMm3/d o tn/d según la columna). "
             + razon)
         with st.expander("Ver diferencias por planta"):
@@ -496,7 +496,7 @@ def _bloque_flujos(flujos, factor_mm):
     )
 
     csv = flujos.reset_index(names="Planta").to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Descargar flujos", csv, "flujos_sandbox.csv",
+    st.download_button("Descargar flujos", csv, "flujos_sandbox.csv",
                        "text/csv", key="dl_sandbox")
 
 

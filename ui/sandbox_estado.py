@@ -115,7 +115,7 @@ def hay_algo_que_restablecer() -> bool:
     )
 
 
-def boton_restablecer(rerun, etiqueta="↺ Restablecer el sandbox") -> bool:
+def boton_restablecer(rerun, etiqueta="Restablecer el sandbox") -> bool:
     """Botón con confirmación en dos pasos. Devuelve True si restableció.
 
     La confirmación no es un adorno: un clic accidental puede borrar veinte
@@ -134,7 +134,7 @@ def boton_restablecer(rerun, etiqueta="↺ Restablecer el sandbox") -> bool:
             "**¿Restablecer?** Se borran las plantas que agregaste, las "
             "intervenciones sobre ductos y los cambios de capacidad. Vuelve "
             "todo a la corrida oficial.\n\n"
-            "Si querés conservar esto, cancelá y usá **⬇️ Descargar** para "
+            "Si querés conservar esto, cancelá y usá **Descargar** para "
             "guardarlo como escenario.")
 
         col_si, col_no = st.columns(2)

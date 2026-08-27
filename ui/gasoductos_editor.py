@@ -111,7 +111,7 @@ def panel_gasoductos(tabla_yacimientos, tabla_flujos_directos, compuestos,
 
     intervenciones = obtener_intervenciones()
 
-    st.markdown("### 🛢️ Gasoductos")
+    st.markdown("### Gasoductos")
 
     if not DISPONIBLE:
         st.error(
@@ -143,7 +143,7 @@ def panel_gasoductos(tabla_yacimientos, tabla_flujos_directos, compuestos,
 # ---------------------------------------------------------------------------
 
 def _bloque_alta(yac, fdi, compuestos, intervenciones, factor_mm):
-    with st.expander("➕ Abrir un gasoducto", expanded=False):
+    with st.expander("Abrir un gasoducto", expanded=False):
         areas = areas_disponibles(yac)
         if not areas:
             st.info("No hay áreas con inyección.")
@@ -245,7 +245,7 @@ def _previsualizar(area, reparto, total, volumen, nombre, factor_mm):
         })
 
     filas.append({
-        "Destino": f"➕ {nombre}",
+        "Destino": f"{nombre} (nuevo)",
         "Ahora": 0.0,
         "Después": volumen / factor_mm,
         "Δ": volumen / factor_mm,
@@ -275,7 +275,7 @@ def _previsualizar(area, reparto, total, volumen, nombre, factor_mm):
 
 
 def _bloque_baja(yac, fdi, intervenciones, factor_mm):
-    with st.expander("🔧 Sacar un gasoducto por mantenimiento", expanded=False):
+    with st.expander("Sacar un gasoducto por mantenimiento", expanded=False):
         ductos = gasoductos_disponibles(yac, fdi)
         ya = {i.nombre for i in intervenciones}
         ductos = [d for d in ductos if d not in ya]
@@ -310,7 +310,7 @@ def _bloque_baja(yac, fdi, intervenciones, factor_mm):
 
         if sin_salida:
             st.warning(
-                f"⚠️ {len(sin_salida)} área(s) sólo inyectan a este ducto. Ese "
+                f"{len(sin_salida)} área(s) sólo inyectan a este ducto. Ese "
                 "gas **no se redistribuye** (no hay a dónde) y el total "
                 "inyectado baja: "
                 + ", ".join(f"{a} ({v / factor_mm:,.2f})" for a, v in sin_salida[:5])
@@ -335,11 +335,11 @@ def _bloque_activas(intervenciones, factor_mm):
         col_a, col_b, col_c = st.columns([4, 1, 1])
 
         if interv.tipo == "alta":
-            texto = (f"➕ **{interv.nombre}** · {interv.area_origen} → "
+            texto = (f"**{interv.nombre}** · {interv.area_origen} → "
                      f"{interv.planta_destino} · {interv.volumen / factor_mm:,.2f} MMm3/d"
                      + (" · croma propia" if interv.cromato is not None else ""))
         else:
-            texto = f"🔧 **{interv.nombre}** fuera de servicio"
+            texto = f"**{interv.nombre}** fuera de servicio"
 
         col_a.markdown(texto if interv.activa else f"~~{texto}~~")
 
@@ -348,7 +348,7 @@ def _bloque_activas(intervenciones, factor_mm):
         interv.activa = col_b.toggle(
             "on", value=interv.activa, key=f"gd_act_{i}", label_visibility="collapsed")
 
-        if col_c.button("🗑️", key=f"gd_del_{i}", help="Eliminar"):
+        if col_c.button("Eliminar", key=f"gd_del_{i}", help="Quitar esta intervención"):
             intervenciones.pop(i)
             _rerun()
 

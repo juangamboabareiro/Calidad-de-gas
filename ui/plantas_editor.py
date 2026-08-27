@@ -154,7 +154,7 @@ def panel_plantas(retenidos_rtp, compuestos, config, tbx_en_servicio: bool,
     inicializar(retenidos_rtp, compuestos, config, tbx_en_servicio)
     registro = obtener_registro()
 
-    st.markdown("### 🏭 Plantas y conexiones")
+    st.markdown("### Plantas y conexiones")
 
     _mostrar_flash()
 
@@ -188,7 +188,7 @@ def panel_plantas(retenidos_rtp, compuestos, config, tbx_en_servicio: bool,
 # ---------------------------------------------------------------------------
 
 def _bloque_alta(registro, compuestos):
-    with st.expander("➕ Agregar o eliminar plantas", expanded=not registro):
+    with st.expander("Agregar o eliminar plantas", expanded=not registro):
         col_a, col_b = st.columns([2, 1])
         nombre = col_a.text_input("Nombre de la planta nueva", key="nueva_nombre")
         preset = col_a.selectbox(
@@ -255,7 +255,7 @@ def panel_escenarios(registro):
     # `pipeline.gasoductos` no este instalado.
     from ui.gasoductos_editor import obtener_intervenciones, Intervencion
 
-    st.markdown("### 📁 Escenarios")
+    st.markdown("### Escenarios")
     st.caption(
         "Un escenario guarda **las plantas y los gasoductos juntos**: es una "
         "pregunta completa, no se parte en dos archivos.")
@@ -327,12 +327,12 @@ def panel_escenarios(registro):
                 _rerun()
 
     col_e, col_f = st.columns(2)
-    if col_e.button("💾 Guardar", **ancho(), key="btn_guardar_reg"):
+    if col_e.button("Guardar", **ancho(), key="btn_guardar_reg"):
         ruta = guardar_registro(registro)
         st.success(f"Plantas guardadas en `{ruta}`.")
 
     col_f.download_button(
-        "⬇️ Descargar", **ancho(), key="btn_desc_reg",
+        "Descargar", **ancho(), key="btn_desc_reg",
         data=serializar(registro, obtener_intervenciones()).encode("utf-8"),
         file_name="escenario.json", mime="application/json",
         help="Plantas y gasoductos juntos.")
@@ -382,7 +382,7 @@ def _escenarios_disponibles() -> dict:
 
 
 def _bloque_cromas(compuestos, factor_mm):
-    with st.expander("📄 Cromatografías de planta (archivo aparte)"):
+    with st.expander("Cromatografías de planta (archivo aparte)"):
         st.caption(
             "Va **separado de `inputs.xlsx`**. Una fila por corriente, con las "
             "columnas `Planta`, `Origen`, `Volumen` (MMm3/d) y una columna por "
@@ -414,7 +414,7 @@ def _bloque_cromas(compuestos, factor_mm):
 
 
 def _bloque_general(planta: PlantaConfig, factor_mm):
-    with st.expander(f"⚙️ Parámetros de {planta.nombre}", expanded=True):
+    with st.expander(f"Parámetros de {planta.nombre}", expanded=True):
         planta.activa = st.checkbox(
             "En servicio", value=planta.activa, key=f"act_{planta.nombre}",
             help="Fuera de servicio no trata nada y deja pasar todo el gas.")
@@ -475,7 +475,7 @@ def _bloque_retenidos(planta: PlantaConfig, compuestos):
     recalculan coeficientes cuando se pasan del tope de tn/d; esa corrección
     vive en TTY.py y no se toca desde acá.
     """
-    with st.expander(f"🧪 Retención por compuesto — {planta.nombre}"):
+    with st.expander(f"Retención por compuesto — {planta.nombre}"):
         st.caption(
             "Porcentaje de cada compuesto que la planta retiene como líquido. "
             "El resto sale en el gas residual.")
@@ -523,7 +523,7 @@ def _bloque_retenidos(planta: PlantaConfig, compuestos):
 
 def _bloque_conexiones(planta: PlantaConfig, registro, factor_mm):
     """Esquema de proporciones: a dónde va el sobrante y en qué reparto."""
-    with st.expander(f"🔀 Conexiones de salida — {planta.nombre}", expanded=True):
+    with st.expander(f"Conexiones de salida — {planta.nombre}", expanded=True):
         st.caption(
             "La planta se llena hasta su capacidad; **el sobrante** se reparte "
             "entre estos destinos según el porcentaje. Lo que no se lleva "

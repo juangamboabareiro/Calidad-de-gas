@@ -71,7 +71,7 @@ def _descargar_csv(df: pd.DataFrame, nombre: str, key: str, label=None):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     st.download_button(
-        label or f"⬇️ Descargar {nombre}.csv",
+        label or f"Descargar {nombre}.csv",
         data=buf.getvalue(),
         file_name=f"{nombre}.csv",
         mime="text/csv",
@@ -368,9 +368,9 @@ def comparar_con_excel(df_calc: pd.DataFrame, nombre_tabla: str, key: str):
     )
 
     if len(fuera) == 0:
-        st.success(f"✅ Todo dentro de tolerancia ({tol_rel}% / {tol_abs}).")
+        st.success(f"Todo dentro de tolerancia ({tol_rel}% / {tol_abs}).")
     else:
-        st.warning(f"⚠️ {len(fuera):,} celdas fuera de tolerancia.")
+        st.warning(f"{len(fuera):,} celdas fuera de tolerancia.")
         peores = (
             fuera.groupby("columna")
             .agg(celdas=("ok", "size"),
@@ -394,7 +394,7 @@ def comparar_con_excel(df_calc: pd.DataFrame, nombre_tabla: str, key: str):
     )
     _descargar_csv(
         dif, f"diff_{_slug(nombre_tabla)}", key=f"dldiff_{key}",
-        label="⬇️ Descargar comparación completa",
+        label="Descargar comparación completa",
     )
 
 

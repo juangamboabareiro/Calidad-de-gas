@@ -82,7 +82,7 @@ def _slug(texto) -> str:
 def _descargar_csv(df: pd.DataFrame, nombre: str, key: str):
     buf = io.StringIO()
     df.to_csv(buf, index=False)
-    st.download_button(f"⬇️ {nombre}.csv", data=buf.getvalue(),
+    st.download_button(f"{nombre}.csv", data=buf.getvalue(),
                        file_name=f"{nombre}.csv", mime="text/csv", key=key)
 
 
@@ -327,7 +327,7 @@ def _g_prhc(mezcla: pd.DataFrame):
     excesos = df[df["valor"] > limite]
     if len(excesos):
         primero = excesos["periodo"].min()
-        st.warning(f"⚠️ La mezcla supera el límite de {limite:g}°C en "
+        st.warning(f"La mezcla supera el límite de {limite:g}°C en "
                    f"{len(excesos)} período(s), desde "
                    f"{pd.Timestamp(primero).strftime('%m-%Y')}.")
 
@@ -634,7 +634,7 @@ def _tabla_resumen_anual(plantas_df: pd.DataFrame):
 def _sin_serie(resultados: dict):
     st.info(
         "Todavía no hay serie temporal calculada. Cargá el rango en la barra "
-        "lateral (**7. Serie temporal**) y apretá **📈 Calcular serie**: los "
+        "lateral (**7. Serie temporal**) y apretá **Calcular serie**: los "
         "gráficos del dashboard salen de ahí."
     )
 
@@ -689,7 +689,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
     # Se genera bajo demanda (matplotlib redibuja todo) y el resultado queda
     # en session_state para que el download_button sobreviva a los reruns.
     c_rep1, c_rep2 = st.columns([1, 1])
-    if c_rep1.button("📄 Generar reporte PDF", key="btn_reporte_pdf",
+    if c_rep1.button("Generar reporte PDF", key="btn_reporte_pdf",
                      help="Arma las láminas del dashboard con la serie actual."):
         try:
             from ui.reporte_graphs import generar_reporte_pdf
@@ -702,12 +702,12 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
             st.error(f"No se pudo generar el reporte: {e}")
     if st.session_state.get("reporte_pdf"):
         c_rep2.download_button(
-            "⬇️ Descargar reporte_graphs.pdf",
+            "Descargar reporte_graphs.pdf",
             data=st.session_state["reporte_pdf"],
             file_name=f"reporte_graphs_{pd.Timestamp.now():%Y%m%d}.pdf",
             mime="application/pdf", key="dl_reporte_pdf")
 
-    with st.expander("🖼️ Exportar gráficos sueltos (para presentaciones)"):
+    with st.expander("Exportar gráficos sueltos (para presentaciones)"):
         try:
             from ui.reporte_graphs import catalogo_graficos, exportar_graficos
             _catalogo = list(catalogo_graficos(serie))
@@ -749,7 +749,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
                         "DPI": st.column_config.NumberColumn(
                             min_value=72, max_value=600, step=10),
                     })
-                if st.button("🖼️ Generar", key="btn_exportar_graficos"):
+                if st.button("Generar", key="btn_exportar_graficos"):
                     pedidos = [{"nombre": f["Gráfico"],
                                 "ancho_cm": f["Ancho [cm]"],
                                 "alto_cm": f["Alto [cm]"],
@@ -763,7 +763,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
                         st.error(f"No se pudo exportar: {e}")
                 if st.session_state.get("export_graficos"):
                     contenido, nombre, mime = st.session_state["export_graficos"]
-                    st.download_button(f"⬇️ Descargar {nombre}", data=contenido,
+                    st.download_button(f"Descargar {nombre}", data=contenido,
                                        file_name=nombre, mime=mime,
                                        key="dl_export_graficos")
     st.divider()

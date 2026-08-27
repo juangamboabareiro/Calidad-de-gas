@@ -107,6 +107,13 @@ st.set_page_config(page_title="Balance de Gas", layout="wide")
 # Unidades: cuántas unidades de Volumen_inyectado hay en 1 MMm3/d.
 FACTOR_MM = float(getattr(config, "FACTOR_MMm3_A_UNIDAD_VOLUMEN", 1000.0))
 
+# Defaults de los inputs de la barra lateral. Viven aca y no en `config` porque
+# son arranques comodos para el panel, no premisas del modelo: config sigue
+# siendo la fuente de verdad para quien corre el pipeline sin la UI.
+DEFAULT_FECHA_PM_TTY_TBX = pd.Timestamp("2028-01-01")
+DEFAULT_SERIE_DESDE = "01-2025"
+DEFAULT_SERIE_HASTA = "12-2030"
+
 # `_actualizar_config_y_recargar` sobrescribe config.PATH_INPUTS con el path de
 # la corrida. Si eso pasa una vez con un archivo subido, el default de disco
 # queda perdido para siempre y la rama "sin archivo" del uploader lee el
@@ -540,15 +547,15 @@ with st.sidebar.form("parametros", **_form_kwargs):
     st.header("3. Módulo TTY")
     fecha_pm_str = st.text_input(
         "Fecha PM TTY-TBX (MM-YYYY)",
-        value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
+        value=DEFAULT_FECHA_PM_TTY_TBX.strftime("%m-%Y"),
         help="Obligatoria. Antes de esta fecha TTY-TBX no está en servicio y "
              "todo el pool va a TTY-DP.",
     )
     try:
         fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
     except Exception:
-        st.error("Formato inválido, se usa el default de config.")
-        fecha_pm_ts = config.FECHA_PM_TTY_TBX
+        st.error("Formato inválido, se usa el default del panel.")
+        fecha_pm_ts = DEFAULT_FECHA_PM_TTY_TBX
 
     tbx_en_servicio = periodo_ts >= fecha_pm_ts
     if tbx_en_servicio:
@@ -636,11 +643,11 @@ with st.sidebar.form("parametros", **_form_kwargs):
     )
     serie_desde_str = st.text_input(
         "Desde (MM-YYYY)",
-        value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
+        value=DEFAULT_SERIE_DESDE,
         key="serie_desde",
     )
     serie_hasta_str = st.text_input(
-        "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
+        "Hasta (MM-YYYY)", value=DEFAULT_SERIE_HASTA, key="serie_hasta")
 
     try:
         serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()

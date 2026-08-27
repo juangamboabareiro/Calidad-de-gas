@@ -20,6 +20,12 @@ POR QUE ANTES SE VEIA ROTO
 3. El `<defs>` estaba al final, después de los elementos que lo referencian.
    -> Ahora: `<defs>` primero.
 
+5. El render iba en un iframe de altura fija (`components.html`), asi que no
+   acompanaba el ancho de la ventana: al agrandarla el esquema se recortaba y
+   al achicarla sobraba blanco.
+   -> Ahora: el data-URI va en `st.markdown` y el alto lo deduce el navegador
+      del `viewBox`. Ver `mostrar_esquema_planta`.
+
 4. La geometría se solapaba (el ByPass cruzaba la caja, los textos de IN/OUT
    pisaban las flechas, el marker apuntaba al extremo equivocado).
    -> Ahora: entradas a la izquierda, salidas a la derecha, LGN arriba,
@@ -58,6 +64,27 @@ def _fmt(valor, decimales=1, unidad=""):
     if pd.isna(f):
         return "—"
     return f"{f:,.{decimales}f}{unidad}"
+
+
+def _relacion_viewbox(svg: str, default: str = "760 / 470") -> str:
+    """Relacion de aspecto leida del viewBox, para el `aspect-ratio` de CSS."""
+    m = re.search(r'viewBox\s*=\s*"([^"]+)"', svg)
+    if not m:
+        return default
+
+    partes = m.group(1).replace(",", " ").split()
+    if len(partes) != 4:
+        return default
+
+    try:
+        ancho, alto = float(partes[2]), float(partes[3])
+    except ValueError:
+        return default
+
+    if ancho <= 0 or alto <= 0:
+        return default
+
+    return f"{ancho:g} / {alto:g}"
 
 
 def svg_esquema_planta(
@@ -203,7 +230,8 @@ def svg_esquema_planta(
 
 
 def mostrar_esquema_planta(nombre_planta: str, color_planta: str = "#5DADE2",
-                           alto: int = 470, descargable: bool = True, **campos):
+                           alto: int = 470, descargable: bool = True,
+                           usar_iframe: bool = False, **campos):
     """Dibuja el esquema y (opcional) ofrece el .svg para descargar.
 
     Uso en app.py:
@@ -213,25 +241,46 @@ def mostrar_esquema_planta(nombre_planta: str, color_planta: str = "#5DADE2",
             **_armar_esquema(datos),
         )
 
-    El render va como data-URI dentro de un iframe con fondo blanco fijo: así no
-    pasa por el sanitizador de Markdown y se lee igual en tema claro y oscuro.
+    POR QUE NO ESCALABA CON LA VENTANA
+    ----------------------------------
+    El render iba en `components.html(height=alto + 30)`: altura FIJA en pixeles
+    y ancho dado por la columna. Al agrandar la ventana el `<img width:100%>`
+    crecia, la altura proporcional se pasaba del iframe y (con
+    `scrolling=False`) el esquema quedaba RECORTADO abajo; al achicarla sobraba
+    un colchon de blanco. El iframe no se enteraba del viewport.
+
+    Ahora el `<img>` con data-URI va en `st.markdown`: sin altura fija, la
+    calcula el navegador desde el `viewBox` y el esquema escala con la columna.
+    El data-URI sigue siendo lo que protege al SVG del sanitizador de Markdown
+    (era la razon real del iframe, no la altura), asi que eso no se pierde.
+
+    `alto` se acepta por compatibilidad y solo se usa con `usar_iframe=True`,
+    que deja volver al render viejo si alguna version de Streamlit sanitiza el
+    `<div style=...>` del marco.
     """
     svg = svg_esquema_planta(nombre_planta=nombre_planta,
-                            color_planta=color_planta, **campos)
+                             color_planta=color_planta, **campos)
 
     b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    components.html(
-        '<div style="width:100%;background:#FFFFFF;border:1px solid #E3E8EA;'
-        'border-radius:6px;padding:10px 12px;box-sizing:border-box;">'
-        f'<img style="width:100%;height:auto;" src="data:image/svg+xml;base64,{b64}"/>'
-        "</div>",
-        height=alto + 30,
-        scrolling=False,
-    )
+
+    # `aspect-ratio` explicito: un SVG sin width/height dentro de un <img>
+    # colapsa a 0 px de alto en Safari y en algunos WebView.
+    marco = ("background:#FFFFFF;border:1px solid #E3E8EA;border-radius:6px;"
+             "padding:10px 12px;box-sizing:border-box;")
+    img = (f'<img src="data:image/svg+xml;base64,{b64}" '
+           f'alt="Esquema de {nombre_planta}" '
+           f'style="display:block;width:100%;height:auto;'
+           f'aspect-ratio:{_relacion_viewbox(svg)};"/>')
+
+    if usar_iframe:
+        components.html(f'<div style="width:100%;{marco}">{img}</div>',
+                        height=int(alto) + 30, scrolling=False)
+    else:
+        st.markdown(f'<div style="{marco}">{img}</div>', unsafe_allow_html=True)
 
     if descargable:
         st.download_button(
-            "⬇️ Descargar esquema (.svg)",
+            "Descargar esquema (.svg)",
             data=svg,
             file_name=f"esquema_{_slug(nombre_planta)}.svg",
             mime="image/svg+xml",
