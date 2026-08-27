@@ -51,6 +51,7 @@ UNIDADES
 """
 
 import importlib
+import inspect
 import io
 import tempfile
 from pathlib import Path
@@ -69,6 +70,7 @@ from io_.loaders import (
     load_propiedades,
     load_plantas_yacimientos,
     load_matriz_inyecciones,
+    load_cromas_hubs,
 )
 from ui.esquemas import mostrar_esquema_planta
 from ui.mapa import panel_mapa
@@ -89,6 +91,7 @@ from pipeline.tabla_total import (
     calcular_tabla_total_flujos_directos,
     calcular_tabla_total_detalles_hubs,
 )
+from pipeline.hubs import calcular_ruteo_hubs
 from outputs.writers import guardar
 
 from ui.diagnosticos import capturar, mostrar as mostrar_diagnostico
@@ -103,6 +106,12 @@ st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wid
 
 # Unidades: cuántas unidades de Volumen_inyectado hay en 1 MMm3/d.
 FACTOR_MM = float(getattr(config, "FACTOR_MMm3_A_UNIDAD_VOLUMEN", 1000.0))
+
+# `_actualizar_config_y_recargar` sobrescribe config.PATH_INPUTS con el path de
+# la corrida. Si eso pasa una vez con un archivo subido, el default de disco
+# queda perdido para siempre y la rama "sin archivo" del uploader lee el
+# tempdir. Se guarda el valor original en el primer import del proceso.
+PATH_INPUTS_DEFAULT = config.PATH_INPUTS
 
 # Poder calorífico de referencia para MMm3eq/d (base 9300 kcal/m3). Si no está
 # definido en config no se muestra el equivalente, en vez de inventar un número.
@@ -268,6 +277,7 @@ def _kpi_origenes(datos: dict):
     etiquetas = {
         "flujos_directos": "Vía gasoducto",
         "yacimientos": "Inyección directa",
+        "hubs": "Vía HUB",
         "derivacion": "Traspaso de otra planta",
     }
 
@@ -433,98 +443,223 @@ if uploaded is not None:
     with open(input_path, "wb") as f:
         f.write(uploaded.getbuffer())
 else:
-    input_path = config.PATH_INPUTS
+    input_path = PATH_INPUTS_DEFAULT
 st.sidebar.caption(f"Archivo en uso: `{Path(input_path).name}`")
 
-st.sidebar.header("2. Fechas")
-periodo_str = st.sidebar.text_input(
-    "Período considerado (MM-YYYY)", value=config.PERIODO_CONSIDERADO.strftime("%m-%Y")
+# Las secciones 2 a 7 van dentro de un FORM. Adentro de un form los widgets no
+# disparan rerun: se comitean todos juntos cuando apretas un submit. Sin esto,
+# el click en "Ejecutar pipeline" se lo comia el blur del campo que estabas
+# editando (el blur dispara su propio rerun, y en ese rerun el boton vale
+# False), y habia que clickear dos veces por cada campo tocado.
+#
+# El file_uploader queda AFUERA a proposito: necesita su propio rerun para
+# subir el archivo, adentro del form no funcionaria.
+#
+# Contrapartida: los mensajes derivados (TBX en servicio, cantidad de periodos
+# del rango) reflejan los valores del ULTIMO submit, no lo que estas tipeando.
+# Se actualizan al apretar cualquiera de los dos botones.
+#
+# `enter_to_submit=False`: por default un Enter en cualquier text_input o
+# number_input del form dispara el submit, o sea corre el pipeline entero sin
+# querer. Con esto Enter solo comitea el valor del campo y la unica forma de
+# ejecutar es apretar un boton. El parametro existe desde Streamlit 1.39, asi
+# que se chequea la firma antes de pasarlo en vez de romper en versiones viejas.
+_form_kwargs = (
+    {"enter_to_submit": False}
+    if "enter_to_submit" in inspect.signature(st.form).parameters
+    else {}
 )
-try:
-    periodo_ts = pd.Timestamp(periodo_str.replace("/", "-"))
-except Exception:
-    st.sidebar.error("Formato inválido, se usa el default de config.")
-    periodo_ts = config.PERIODO_CONSIDERADO
 
-fecha_pm_str = st.sidebar.text_input(
-    "Fecha PM TTY-TBX (MM-YYYY)",
-    value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
-    help="Antes de esta fecha TTY-TBX no está en servicio y todo el pool va a TTY-DP.",
-)
-try:
-    fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
-except Exception:
-    st.sidebar.error("Formato inválido, se usa el default de config.")
-    fecha_pm_ts = config.FECHA_PM_TTY_TBX
+if not _form_kwargs:
+    st.sidebar.caption(
+        "⚠️ Streamlit < 1.39: Enter todavía ejecuta el pipeline. "
+        "Actualizá (`pip install -U streamlit`) para desactivarlo."
+    )
 
-tbx_en_servicio = periodo_ts >= fecha_pm_ts
-if tbx_en_servicio:
-    st.sidebar.success("TTY-TBX **en servicio** en este período.")
-else:
-    st.sidebar.info("TTY-TBX **fuera de servicio**: el pool va directo a TTY-DP.")
+with st.sidebar.form("parametros", **_form_kwargs):
 
-st.sidebar.header("3. Evacuación de LGN (tn/d)")
-st.sidebar.caption("Restricción activa: define cuánto gas puede tratar cada planta.")
-evac_tty_tbx = st.sidebar.number_input(
-    "TTY-TBX", value=float(config.CAPACIDAD_EVACUACION_TTY_TBX), step=100.0)
-evac_tty_dp = st.sidebar.number_input(
-    "TTY-DP", value=float(config.CAPACIDAD_EVACUACION_TTY_DP), step=10.0)
-evac_mega = st.sidebar.number_input(
-    "MEGA", value=float(config.CAPACIDAD_EVACUACION_MEGA), step=100.0)
+    st.header("2. Fechas")
+    periodo_str = st.text_input(
+        "Período considerado (MM-YYYY)", value=config.PERIODO_CONSIDERADO.strftime("%m-%Y")
+    )
+    try:
+        periodo_ts = pd.Timestamp(periodo_str.replace("/", "-"))
+    except Exception:
+        st.error("Formato inválido, se usa el default de config.")
+        periodo_ts = config.PERIODO_CONSIDERADO
 
-st.sidebar.header("4. Traspasos máximos (MMm3/d)")
-max_deriv_tbx_dp_mm = st.sidebar.number_input(
-    "TTY-TBX → TTY-DP",
-    value=float(config.MAX_DERIVACION_TTY_TBX_A_TTY_DP) / FACTOR_MM, step=0.5,
-    help="Lo que exceda este tope es bypass de TTY-TBX.")
-max_deriv_dp_mega_mm = st.sidebar.number_input(
-    "TTY-DP → MEGA",
-    value=float(config.MAX_DERIVACION_TTY_DP_A_MEGA) / FACTOR_MM, step=0.5,
-    help="Lo que exceda este tope es bypass de TTY-DP.")
+    # ------------------------------------------------------------------
+    # Módulos de planta: la PM (obligatoria) y las ampliaciones (opcionales,
+    # tantas filas como se quiera: el editor agrega renglones a demanda).
+    # Cada ampliación entra en vigencia cuando su fecha <= período de la
+    # corrida, así que en la serie temporal se prenden solas mes a mes.
+    # Los Δ son SOBRE las capacidades base de las secciones 5-7.
+    # ------------------------------------------------------------------
+    _COLS_AMP = {
+        "Fecha (MM-YYYY)": st.column_config.TextColumn(
+            "Fecha (MM-YYYY)", help="Vigente desde este mes inclusive."),
+        "Δ Evacuación [tn/d]": st.column_config.NumberColumn(
+            "Δ Evacuación [tn/d]", default=0.0, step=50.0,
+            help="Se SUMA a la capacidad de evacuación base."),
+        "Δ Ingreso [MMm3/d]": st.column_config.NumberColumn(
+            "Δ Ingreso [MMm3/d]", default=0.0, step=0.5,
+            help="Se SUMA a la capacidad de ingreso base."),
+    }
 
-with st.sidebar.expander("5. Capacidad de ingreso de gas (MMm3/d)"):
-    st.caption("Rara vez limita: entra solo como tope adicional junto a la evacuación.")
-    cap_tty_tbx_mm = st.number_input(
-        "TTY-TBX", value=float(config.CAPACIDAD_TTY_TBX) / FACTOR_MM, step=1.0)
-    cap_tty_dp_mm = st.number_input(
-        "TTY-DP", value=float(config.CAPACIDAD_TTY_DP) / FACTOR_MM, step=1.0)
-    cap_mega_mm = st.number_input(
-        "MEGA", value=float(config.CAPACIDAD_MEGA) / FACTOR_MM, step=1.0)
+    def _parsear_ampliaciones(df, etiqueta, con_tren=False):
+        """data_editor -> lista de dicts ya en unidades del modelo.
 
-st.sidebar.header("6. Salidas")
-guardar_csvs = st.sidebar.checkbox("Guardar CSVs en disco al ejecutar", value=False)
+        Filas sin fecha o con ambos Δ en cero se ignoran en silencio (son
+        renglones a medio cargar). Fechas mal formateadas avisan y se saltean:
+        mejor correr sin esa ampliación que abortar el submit entero.
+        """
+        ampliaciones = []
+        if df is None:
+            return ampliaciones
+        for _, fila in df.fillna({"Δ Evacuación [tn/d]": 0.0,
+                                  "Δ Ingreso [MMm3/d]": 0.0}).iterrows():
+            fecha_cruda = str(fila.get("Fecha (MM-YYYY)") or "").strip()
+            d_evac = float(fila.get("Δ Evacuación [tn/d]") or 0.0)
+            d_ing_mm = float(fila.get("Δ Ingreso [MMm3/d]") or 0.0)
+            if not fecha_cruda and d_evac == 0.0 and d_ing_mm == 0.0:
+                continue
+            try:
+                fecha = pd.Timestamp(fecha_cruda.replace("/", "-"))
+            except Exception:
+                st.warning(f"{etiqueta}: fecha inválida '{fecha_cruda}', "
+                           "esa ampliación se ignora.")
+                continue
+            amp = {"fecha": fecha, "d_evac": d_evac,
+                   "d_ingreso": d_ing_mm * FACTOR_MM}
+            if con_tren:
+                amp["tren"] = str(fila.get("Tren") or "TBX")
+                amp["convertible"] = bool(fila.get("Convertible desde DP") or False)
+            ampliaciones.append(amp)
+        return sorted(ampliaciones, key=lambda a: a["fecha"])
 
-run = st.sidebar.button("▶️ Ejecutar pipeline", type="primary", use_container_width=True)
+    st.header("3. Módulo TTY")
+    fecha_pm_str = st.text_input(
+        "Fecha PM TTY-TBX (MM-YYYY)",
+        value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
+        help="Obligatoria. Antes de esta fecha TTY-TBX no está en servicio y "
+             "todo el pool va a TTY-DP.",
+    )
+    try:
+        fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
+    except Exception:
+        st.error("Formato inválido, se usa el default de config.")
+        fecha_pm_ts = config.FECHA_PM_TTY_TBX
 
-st.sidebar.header("7. Serie temporal")
-st.sidebar.caption(
-    "Alimenta el tab **Graphs**. Corre el pipeline una vez por mes del rango "
-    "con los mismos parámetros de capacidad de arriba, así que un rango largo "
-    "tarda: son N corridas completas."
-)
-serie_desde_str = st.sidebar.text_input(
-    "Desde (MM-YYYY)",
-    value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
-    key="serie_desde",
-)
-serie_hasta_str = st.sidebar.text_input(
-    "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
+    tbx_en_servicio = periodo_ts >= fecha_pm_ts
+    if tbx_en_servicio:
+        st.success("TTY-TBX **en servicio** en este período.")
+    else:
+        st.info("TTY-TBX **fuera de servicio**: el pool va directo a TTY-DP.")
 
-try:
-    serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()
-    serie_hasta = pd.Timestamp(serie_hasta_str.replace("/", "-")).normalize()
-    periodos_serie = list(pd.date_range(serie_desde, serie_hasta, freq="MS"))
-except Exception:
-    st.sidebar.error("Rango inválido (formato MM-YYYY).")
-    periodos_serie = []
+    st.caption("Ampliaciones (opcionales, agregá tantas filas como quieras):")
+    _amp_tty_df = st.data_editor(
+        pd.DataFrame(columns=["Fecha (MM-YYYY)", "Tren", "Δ Evacuación [tn/d]",
+                              "Δ Ingreso [MMm3/d]", "Convertible desde DP"]),
+        num_rows="dynamic",
+        key="amp_tty",
+        use_container_width=True,
+        column_config={
+            **_COLS_AMP,
+            "Tren": st.column_config.SelectboxColumn(
+                "Tren", options=["TBX", "DP"], default="TBX", required=True),
+            "Convertible desde DP": st.column_config.CheckboxColumn(
+                "Convertible desde DP", default=False,
+                help="Solo tiene efecto en ampliaciones del tren TBX: los Δ se "
+                     "RESTAN de TTY-DP (capacidad que se convierte de DP a TBX, "
+                     "no capacidad nueva)."),
+        },
+    )
+    ampliaciones_tty = _parsear_ampliaciones(_amp_tty_df, "Módulo TTY", con_tren=True)
 
-if periodos_serie:
-    st.sidebar.caption(f"{len(periodos_serie)} período(s) en el rango.")
-else:
-    st.sidebar.caption("El rango no contiene ningún inicio de mes.")
+    st.header("4. Módulo MEGA")
+    st.caption("Ampliaciones (opcionales):")
+    _amp_mega_df = st.data_editor(
+        pd.DataFrame(columns=["Fecha (MM-YYYY)", "Δ Evacuación [tn/d]",
+                              "Δ Ingreso [MMm3/d]"]),
+        num_rows="dynamic",
+        key="amp_mega",
+        use_container_width=True,
+        column_config=_COLS_AMP,
+    )
+    ampliaciones_mega = _parsear_ampliaciones(_amp_mega_df, "Módulo MEGA")
 
-run_serie = st.sidebar.button(
-    "📈 Calcular serie", use_container_width=True, disabled=not periodos_serie)
+    _vigentes = sum(a["fecha"] <= periodo_ts for a in ampliaciones_tty + ampliaciones_mega)
+    if ampliaciones_tty or ampliaciones_mega:
+        st.caption(f"{len(ampliaciones_tty) + len(ampliaciones_mega)} ampliación(es) "
+                   f"cargadas, {_vigentes} vigente(s) al período considerado.")
+
+    st.header("5. Evacuación de LGN (tn/d)")
+    st.caption("Restricción activa: define cuánto gas puede tratar cada planta. Son las capacidades BASE; las ampliaciones de los módulos suman encima.")
+    evac_tty_tbx = st.number_input(
+        "TTY-TBX", value=float(config.CAPACIDAD_EVACUACION_TTY_TBX), step=100.0)
+    evac_tty_dp = st.number_input(
+        "TTY-DP", value=float(config.CAPACIDAD_EVACUACION_TTY_DP), step=10.0)
+    evac_mega = st.number_input(
+        "MEGA", value=float(config.CAPACIDAD_EVACUACION_MEGA), step=100.0)
+
+    st.header("6. Traspasos máximos (MMm3/d)")
+    max_deriv_tbx_dp_mm = st.number_input(
+        "TTY-TBX → TTY-DP",
+        value=float(config.MAX_DERIVACION_TTY_TBX_A_TTY_DP) / FACTOR_MM, step=0.5,
+        help="Lo que exceda este tope es bypass de TTY-TBX.")
+    max_deriv_dp_mega_mm = st.number_input(
+        "TTY-DP → MEGA",
+        value=float(config.MAX_DERIVACION_TTY_DP_A_MEGA) / FACTOR_MM, step=0.5,
+        help="Lo que exceda este tope es bypass de TTY-DP.")
+
+    with st.expander("7. Capacidad de ingreso de gas (MMm3/d)"):
+        st.caption("Rara vez limita: entra solo como tope adicional junto a la evacuación.")
+        cap_tty_tbx_mm = st.number_input(
+            "TTY-TBX", value=float(config.CAPACIDAD_TTY_TBX) / FACTOR_MM, step=1.0)
+        cap_tty_dp_mm = st.number_input(
+            "TTY-DP", value=float(config.CAPACIDAD_TTY_DP) / FACTOR_MM, step=1.0)
+        cap_mega_mm = st.number_input(
+            "MEGA", value=float(config.CAPACIDAD_MEGA) / FACTOR_MM, step=1.0)
+
+    st.header("8. Salidas")
+    guardar_csvs = st.checkbox("Guardar CSVs en disco al ejecutar", value=False)
+
+    run = st.form_submit_button(
+        "▶️ Ejecutar pipeline", type="primary", use_container_width=True)
+
+    st.header("9. Serie temporal")
+    st.caption(
+        "Alimenta el tab **Graphs**. Corre el pipeline una vez por mes del rango "
+        "con las capacidades base de arriba; las ampliaciones de los módulos se "
+        "prenden solas en el mes que les corresponde. Un rango largo tarda: son "
+        "N corridas completas."
+    )
+    serie_desde_str = st.text_input(
+        "Desde (MM-YYYY)",
+        value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
+        key="serie_desde",
+    )
+    serie_hasta_str = st.text_input(
+        "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
+
+    try:
+        serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()
+        serie_hasta = pd.Timestamp(serie_hasta_str.replace("/", "-")).normalize()
+        periodos_serie = list(pd.date_range(serie_desde, serie_hasta, freq="MS"))
+    except Exception:
+        st.error("Rango inválido (formato MM-YYYY).")
+        periodos_serie = []
+
+    if periodos_serie:
+        st.caption(f"{len(periodos_serie)} período(s) en el rango.")
+    else:
+        st.caption("El rango no contiene ningún inicio de mes.")
+
+    # Sin `disabled`: adentro del form no puede reaccionar a lo que tipeas, se
+    # quedaria con el estado del submit anterior. El rango vacio se valida
+    # abajo, en el `if run_serie`.
+    run_serie = st.form_submit_button(
+        "📈 Calcular serie", use_container_width=True)
 
 PARAMS = {
     "PERIODO_CONSIDERADO": periodo_ts,
@@ -537,6 +672,11 @@ PARAMS = {
     "CAPACIDAD_EVACUACION_MEGA": evac_mega,
     "MAX_DERIVACION_TTY_TBX_A_TTY_DP": max_deriv_tbx_dp_mm * FACTOR_MM,
     "MAX_DERIVACION_TTY_DP_A_MEGA": max_deriv_dp_mega_mm * FACTOR_MM,
+    # Listas de largo libre: cada dict es {fecha, d_evac, d_ingreso} y en TTY
+    # ademas {tren, convertible}. Se resuelven POR PERIODO adentro de
+    # ejecutar_pipeline, asi la serie temporal las prende mes a mes.
+    "AMPLIACIONES_TTY": ampliaciones_tty,
+    "AMPLIACIONES_MEGA": ampliaciones_mega,
 }
 
 
@@ -544,7 +684,170 @@ PARAMS = {
 # Pipeline
 # ===========================================================================
 
+@st.cache_data(show_spinner=False)
+def _cargar_hojas(path, _firma):
+    """Las diez lecturas del Excel, cacheadas juntas.
+
+    `_firma` es (mtime, size) del archivo: entra solo para invalidar el cache si
+    el excel cambia en disco. No se usa adentro.
+
+    `st.cache_data` devuelve una COPIA en cada acceso, asi que `preprocesar_inputs`
+    puede seguir mutando los DataFrames in place sin contaminar el cache.
+
+    OJO: esto NO cachea la lectura que hace `domain.ctes_gas` en su import, que
+    `_actualizar_config_y_recargar` rehace con `importlib.reload` en cada corrida.
+    Mientras los modulos sigan leyendo config a nivel de modulo, esa queda afuera.
+    """
+    return {
+        "inyeccion_9300": load_inyeccion_9300(path),
+        "coeficientes": load_coeficientes(path),
+        "retenidos_rtp": load_retenidos_rtp(path),
+        "flujos_directos": load_flujos_directos(path),
+        "yacimientos": load_yacimientos(path),
+        "detalles_hubs": load_detalles_hubs(path),
+        "propiedades": load_propiedades(path),
+        "plantas_yacimientos": load_plantas_yacimientos(path),
+        "matriz_inyecciones": load_matriz_inyecciones(path),
+        # Opcional: None si el excel no tiene la hoja. El ruteo por hubs cae
+        # entonces a la mezcla volumetrica de las areas de cada hub.
+        "cromas_hubs": load_cromas_hubs(path),
+    }
+
+
+def _firma_archivo(path):
+    """(mtime, size) para invalidar el cache. Si el path no existe se devuelve
+    None y `_cargar_hojas` cachea igual: el error lo tira el loader, como antes."""
+    try:
+        st_ = Path(path).stat()
+        return (st_.st_mtime, st_.st_size)
+    except OSError:
+        return None
+
+
+def _aplicar_ampliaciones(params: dict) -> dict:
+    """Capacidades EFECTIVAS al período: base + ampliaciones ya vigentes.
+
+    Devuelve una COPIA de params: el dict original (PARAMS) se reusa en las N
+    corridas de la serie temporal y cada mes tiene que arrancar de las bases.
+
+    Reglas:
+    - Una ampliación rige desde su fecha inclusive (fecha <= período).
+    - TTY distingue tren. Si una ampliación de TBX está marcada `convertible`,
+      sus Δ se RESTAN de TTY-DP: es capacidad que se convierte de un tren al
+      otro, no capacidad nueva del sistema.
+    - Nada queda negativo: si las conversiones exceden la capacidad de DP, se
+      recorta a cero con aviso (el aviso sale en el panel de diagnósticos).
+    """
+    p = dict(params)
+    periodo = p["PERIODO_CONSIDERADO"]
+
+    aplicadas = []
+
+    for a in p.get("AMPLIACIONES_MEGA", []):
+        if a["fecha"] > periodo:
+            continue
+        p["CAPACIDAD_EVACUACION_MEGA"] += a["d_evac"]
+        p["CAPACIDAD_MEGA"] += a["d_ingreso"]
+        aplicadas.append(f"MEGA {a['fecha']:%m-%Y}")
+
+    for a in p.get("AMPLIACIONES_TTY", []):
+        if a["fecha"] > periodo:
+            continue
+        if a.get("tren", "TBX") == "TBX":
+            p["CAPACIDAD_EVACUACION_TTY_TBX"] += a["d_evac"]
+            p["CAPACIDAD_TTY_TBX"] += a["d_ingreso"]
+            if a.get("convertible"):
+                p["CAPACIDAD_EVACUACION_TTY_DP"] -= a["d_evac"]
+                p["CAPACIDAD_TTY_DP"] -= a["d_ingreso"]
+                aplicadas.append(f"TTY-TBX {a['fecha']:%m-%Y} (convertida desde DP)")
+            else:
+                aplicadas.append(f"TTY-TBX {a['fecha']:%m-%Y}")
+        else:
+            p["CAPACIDAD_EVACUACION_TTY_DP"] += a["d_evac"]
+            p["CAPACIDAD_TTY_DP"] += a["d_ingreso"]
+            aplicadas.append(f"TTY-DP {a['fecha']:%m-%Y}")
+
+    for clave in ("CAPACIDAD_EVACUACION_TTY_TBX", "CAPACIDAD_EVACUACION_TTY_DP",
+                  "CAPACIDAD_EVACUACION_MEGA", "CAPACIDAD_TTY_TBX",
+                  "CAPACIDAD_TTY_DP", "CAPACIDAD_MEGA"):
+        if p[clave] < 0:
+            print(f"[ampliaciones] OJO {clave} quedó negativa "
+                  f"({p[clave]:,.1f}) tras las conversiones: se recorta a 0")
+            p[clave] = 0.0
+
+    if aplicadas:
+        print(f"[ampliaciones] vigentes al {periodo:%m-%Y}: {', '.join(aplicadas)}")
+
+    return p
+
+
+def _propiedades_corrientes(plantas, tabla_total_hubs, propiedades, compuestos,
+                            ctes):
+    """z, densidad, PCS e IW del gas RESIDUAL de cada planta y del gas de
+    salida de cada hub. Misma cuenta que para las areas
+    (`calcular_propiedades_gas`), aplicada a estas corrientes.
+
+    OJO renormalizacion: `gas_residual_OUT` sale de io_plantas como
+    `gas_rico_IN * (1 - retenidos)` y suma MENOS que 1 (le falta lo retenido).
+    Para propiedades fisicas la composicion tiene que sumar 1 — los moles
+    retenidos ya no estan en la corriente — asi que aca se renormaliza. Las
+    fracciones x_ que ya se grafican salen del vector original: no se tocan.
+
+    Los hubs no retienen nada: su "salida" es la croma de tabla_total_hubs tal
+    cual (premisa de Cromas-HUBs o mezcla volumetrica), que ya suma ~1.
+    """
+    filas = []
+
+    for nombre, datos in plantas.items():
+        croma = datos.get("gas_residual_OUT")
+        if croma is None:
+            continue
+
+        # Segun como vengan los retenidos (Serie o DataFrame de una columna),
+        # gas_rico_IN * (1 - retenidos) devuelve Serie o DataFrame. Mismo caso
+        # que resuelve _fila_derivacion en planta_template: se aplana con
+        # squeeze. Si aun asi queda 2D (dos dimensiones reales), no hay una
+        # unica composicion que calcular y se saltea con aviso.
+        if isinstance(croma, pd.DataFrame):
+            croma = croma.squeeze()
+        if not isinstance(croma, pd.Series):
+            print(f"[propiedades_corrientes] gas_residual_OUT de {nombre} "
+                  "no es un vector: se omite")
+            continue
+
+        croma = pd.to_numeric(croma.reindex(compuestos), errors="coerce").fillna(0.0)
+        total = float(croma.sum())
+        if total <= 0:
+            continue
+        filas.append({"Corriente": nombre, "Tipo": "gas residual planta",
+                      **(croma / total).to_dict()})
+
+    if tabla_total_hubs is not None and len(tabla_total_hubs):
+        # Un hub aparece una vez por destino con la MISMA croma: una fila por hub.
+        for _, f in tabla_total_hubs.drop_duplicates("Area").iterrows():
+            filas.append({"Corriente": str(f.get("HUB", f["Area"])),
+                          "Tipo": "salida de hub",
+                          **{c: float(f.get(c, 0.0)) for c in compuestos}})
+
+    columnas = ["Corriente", "Tipo"] + list(compuestos)
+    if not filas:
+        return pd.DataFrame(columns=columnas + ["z", "densidad", "PCS", "IW"])
+
+    tabla = pd.DataFrame(filas).reindex(columns=columnas).fillna(0.0)
+
+    return calcular_propiedades_gas(
+        tabla, propiedades, list(compuestos), ctes.PRESION_BASE,
+        ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE,
+        ctes.CONVERSION)
+
+
 def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
+    # Las ampliaciones se resuelven ANTES de recargar config: el sandbox
+    # siembra su registro de plantas desde config, y si config quedara con las
+    # capacidades base mientras la cascada usa las efectivas, el control del
+    # tab "Plantas" daría desvío sin haber bug.
+    params = _aplicar_ampliaciones(params)
+
     mods = _actualizar_config_y_recargar(path, params)
     ctes = mods["ctes_gas"]
     preprocesar_inputs = mods["preprocesamiento"].preprocesar_inputs
@@ -556,14 +859,18 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
     tbx_activa = bool(periodo >= params["FECHA_PM_TTY_TBX"])
 
     with _status("Cargando datos de entrada...", silencioso) as status:
-        inyeccion_9300 = load_inyeccion_9300(path)
-        coeficientes = load_coeficientes(path)
-        retenidos_rtp = load_retenidos_rtp(path)
-        flujos_directos = load_flujos_directos(path)
-        yacimientos = load_yacimientos(path)
-        detalles_hubs = load_detalles_hubs(path)
-        propiedades = load_propiedades(path)
-        plantas_yacimientos = load_plantas_yacimientos(path)
+        # Cacheado por (path, mtime, size): las 24 corridas de la serie temporal
+        # leen el excel una sola vez en total, no una vez por mes.
+        hojas = _cargar_hojas(path, _firma_archivo(path))
+
+        inyeccion_9300 = hojas["inyeccion_9300"]
+        coeficientes = hojas["coeficientes"]
+        retenidos_rtp = hojas["retenidos_rtp"]
+        flujos_directos = hojas["flujos_directos"]
+        yacimientos = hojas["yacimientos"]
+        detalles_hubs = hojas["detalles_hubs"]
+        propiedades = hojas["propiedades"]
+        plantas_yacimientos = hojas["plantas_yacimientos"]
         status.update(label="Datos cargados ✅", state="complete")
 
     with _status("Normalizando y preprocesando...", silencioso) as status:
@@ -643,12 +950,43 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         tabla_total_detalles_hubs = calcular_propiedades_gas(
             tabla_total_detalles_hubs, propiedades, ctes.COMPUESTOS, ctes.PRESION_BASE,
             ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE, ctes.CONVERSION)
+
+        # --- Ruteo por HUB: area -> HUB -> planta --------------------------
+        # Las areas con HUB asignado no inyectan directo a las plantas: su gas
+        # entra al hub, que lo mezcla (croma de Cromas-HUBs, o mezcla
+        # volumetrica de sus areas si el hub no esta cargado) y lo deriva
+        # segun el reparto de los renglones-hub de Detalles-HUBs. Las rutas
+        # hacia gasoductos y las areas sin hub (HUB == "Otros") no se tocan.
+        #
+        # OJO: PISA tabla_total_yacimientos con la version ajustada (sin las
+        # rutas ruteadas). Todo lo de aca para abajo — comunes, red del mapa,
+        # tablas del panel, CSVs — tiene que ver esa version, por eso va aca
+        # y no despues.
+        tabla_total_yacimientos, tabla_total_hubs, info_hubs = calcular_ruteo_hubs(
+            tabla_total_yacimientos,
+            detalles_hubs_areas,          # la ANCHA, con columna HUB
+            ctes.COMPUESTOS,
+            plantas=params.get("PLANTAS_VIA_HUB",
+                               getattr(config, "PLANTAS_VIA_HUB",
+                                       ("TTY", "MEGA", "TBX El Porton"))),
+            cromas_hubs=hojas["cromas_hubs"],
+        )
+
+        # Propiedades fisicas tambien para las filas de hub, asi la tabla se
+        # ve completa en el panel (el modelado de plantas no las necesita).
+        if len(tabla_total_hubs):
+            tabla_total_hubs = calcular_propiedades_gas(
+                tabla_total_hubs, propiedades, ctes.COMPUESTOS, ctes.PRESION_BASE,
+                ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE, ctes.CONVERSION)
+
         status.update(label="Tablas totales listas ✅", state="complete")
 
     if guardar_csvs:
         guardar(tabla_total_yacimientos, "TBL_TTL_YCS.csv")
         guardar(tabla_total_flujos_directos, "TBL_TTL_DTOS.csv")
         guardar(tabla_total_detalles_hubs, "TBL_TTL_DH.csv")
+        if len(tabla_total_hubs):
+            guardar(tabla_total_hubs, "TBL_TTL_HUBS.csv")
 
     with _status("Resolviendo la cascada de plantas...", silencioso) as status:
         retenidos_TTY_DP = retenidos_rtp[ctes.COMPUESTOS][retenidos_rtp["Planta"] == "Dew point"]
@@ -663,11 +1001,19 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         # `tabla_total_yacimientos` hace falta para MEGA y TBX El Porton, cuyos
         # origenes incluyen areas que inyectan directo a la planta. TTY no la
         # necesita (VMN y VMS son gasoductos) pero pasarla no cambia nada.
+        #
+        # `tabla_total_yacimientos` ya viene AJUSTADA por el ruteo de hubs:
+        # sin las rutas area->planta de las areas con hub. Esas entran ahora
+        # por `tabla_total_hubs`, con la croma del hub. `mapa_area_hub`
+        # traduce la validacion contra la matriz de inyecciones, que declara
+        # areas como origen pero en el pool aparecen como su hub.
         comunes = dict(
-            matriz_inyecciones=load_matriz_inyecciones(path),
+            matriz_inyecciones=hojas["matriz_inyecciones"],
             calcular_retenidos=calcular_retenidos,
             tabla_total_flujos_directos=tabla_total_flujos_directos,
             tabla_total_yacimientos=tabla_total_yacimientos,
+            tabla_total_hubs=tabla_total_hubs,
+            mapa_area_hub=info_hubs["mapa_area_hub"],
             propiedades=propiedades,
             COMPUESTOS=ctes.COMPUESTOS,
         )
@@ -722,10 +1068,33 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         .abs().max()
     )
 
-    red_gasoductos = pd.DataFrame(columns=["origen", "destino", "valor"])
-    if {"Area", "Gasoducto", "Volumen_inyectado"}.issubset(tabla_total_yacimientos.columns):
-        red_gasoductos = tabla_total_yacimientos[["Area", "Gasoducto", "Volumen_inyectado"]].rename(
-            columns={"Area": "origen", "Gasoducto": "destino", "Volumen_inyectado": "valor"})
+    # La red del mapa son los DOS tramos de la cadena, no solo la primaria.
+    #
+    # Antes salia unicamente de `tabla_total_yacimientos`, o sea aristas
+    # area -> gasoducto. Con eso TTY no aparecia nunca en el mapa: sus origenes
+    # son VMN y VMS, que son gasoductos y viven en flujos directos, asi que no
+    # habia ninguna arista con destino "tty" de donde inferirle una posicion.
+    # MEGA si aparecia, porque tiene areas que le inyectan directo.
+    #
+    # No hay doble conteo: yacimientos aporta area -> gasoducto, flujos
+    # directos aporta gasoducto -> destino y hubs aporta hub -> planta. Son
+    # tramos distintos de la cadena; en la tabla de hubs Area ES el hub, asi
+    # que la arista sale con el nombre del hub como origen.
+    _COLS_RED = ["Area", "Gasoducto", "Volumen_inyectado"]
+
+    _tramos = [
+        tabla[_COLS_RED]
+        for tabla in (tabla_total_yacimientos, tabla_total_flujos_directos,
+                      tabla_total_hubs)
+        if tabla is not None and set(_COLS_RED).issubset(tabla.columns)
+    ]
+
+    if _tramos:
+        red_gasoductos = pd.concat(_tramos, ignore_index=True).rename(
+            columns={"Area": "origen", "Gasoducto": "destino",
+                     "Volumen_inyectado": "valor"})
+    else:
+        red_gasoductos = pd.DataFrame(columns=["origen", "destino", "valor"])
 
     plantas = {
         "TTY - TBX": {
@@ -751,11 +1120,24 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         },
     }
 
+    # Propiedades del gas de salida: residual de plantas + salida de hubs.
+    # Va a `tablas` (tab Tablas) y ademas se cuelga de cada planta para que
+    # `_fila_serie` las levante y el tab Graphs pueda graficarlas en el tiempo.
+    propiedades_corrientes = _propiedades_corrientes(
+        plantas, tabla_total_hubs, propiedades, ctes.COMPUESTOS, ctes)
+
+    for _, fila in propiedades_corrientes.iterrows():
+        if fila["Tipo"] == "gas residual planta" and fila["Corriente"] in plantas:
+            plantas[fila["Corriente"]]["propiedades_residual"] = {
+                k: float(fila[k]) for k in ("z", "densidad", "PCS", "IW")}
+
     return {
         "tablas": {
             "Total Yacimientos": tabla_total_yacimientos,
             "Total Flujos Directos": tabla_total_flujos_directos,
             "Total Detalles HUBs": tabla_total_detalles_hubs,
+            "Total HUBs (ruteo)": tabla_total_hubs,
+            "Propiedades gas de salida": propiedades_corrientes,
         },
         "plantas": plantas,
         "flujos_plantas": flujos_plantas,
@@ -763,11 +1145,22 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         "tbx_en_servicio": tbx_activa,
         "red_gasoductos": red_gasoductos,
 
-        # Para el tab "Plantas (sandbox)". `comunes` son los mismos seis inputs
-        # que ya reciben modelar_TTY y modelar_MEGA; `retenidos_rtp` es para
-        # sembrar la retencion de las tres plantas base.
+        # Informe del ruteo por hubs: hubs ruteados / sin reparto, mapa
+        # area->hub y volumen movido. Lo consume quien quiera (mapa, expander).
+        "info_hubs": info_hubs,
+
+        # Para el tab "Plantas (sandbox)". `comunes` son los mismos inputs
+        # que ya reciben modelar_TTY y modelar_MEGA (incluida la tabla de hubs
+        # y el mapa area->hub); `retenidos_rtp` es para sembrar la retencion
+        # de las tres plantas base.
         "comunes": comunes,
         "retenidos_rtp": retenidos_rtp,
+
+        # Parametros YA con las ampliaciones vigentes aplicadas. El tab
+        # sandbox siembra su registro con esto y no con PARAMS crudos: si
+        # usara las bases mientras la cascada corrio con las efectivas, el
+        # control daria desvio sin haber bug.
+        "params_efectivos": params,
     }
 
 
@@ -775,39 +1168,9 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
 # Serie temporal
 # ===========================================================================
 #
-# El pipeline resuelve UN periodo. Para el tab Graphs se corre una vez por mes
-# y cada resultado se aplana en TRES tablas largas, que replican las vistas del
-# dashboard Excel del cliente (GRAPHS.pdf):
-#
-#   "plantas": una fila por (periodo, planta) con flujos, LGN por corte y
-#              PCS/IW de entrada y salida.
-#   "areas"  : una fila por (periodo, origen_tabla, Area, Gasoducto) con el
-#              volumen inyectado -> "Inyeccion por area / por HUB" y el detalle
-#              por gasoducto.
-#   "pool"   : una fila por (periodo, planta, Area) con el pool de cada planta
-#              -> "Ingreso a planta por area / gasoducto".
-
-_PM_AIRE = 28.9647  # kg/kmol, aire estandar. Para la densidad relativa del IW.
-
-_TABLAS_AREAS = {
-    "Total Yacimientos": "yacimientos",
-    "Total Flujos Directos": "flujos_directos",
-    "Total Detalles HUBs": "detalles_hubs",
-}
-
-
-def _col_por_regex(df: pd.DataFrame, patron: str):
-    """Primera columna cuyo nombre matchea el patron, o None.
-
-    Los nombres exactos de la hoja `propiedades` ("PCS [kcal/m3]", "Poder
-    calorifico...", con o sin tilde) no estan garantizados, asi que se busca
-    por regex en vez de hardcodear y reventar con un KeyError."""
-    import re as _re
-    for col in df.columns:
-        if _re.search(patron, str(col), _re.IGNORECASE):
-            return col
-    return None
-
+# El pipeline resuelve UN periodo. Para el tab de graficos se corre una vez por
+# mes y se aplana cada resultado a una fila por (periodo, planta). Todo lo que
+# se quiera graficar tiene que salir de aca: el tab no vuelve a tocar el modelo.
 
 def _a_dict_compuestos(obj) -> dict:
     """`gas_residual_OUT` -> {compuesto: fraccion}, sin asumir la forma exacta.
@@ -832,147 +1195,8 @@ def _a_dict_compuestos(obj) -> dict:
     if not isinstance(serie_comp, pd.Series):
         return {}
 
-    return {str(k): float(v) for k, v in serie_comp.items() if pd.notna(v)}
-
-
-def _pcs_iw(fracciones, propiedades):
-    """(PCS [kcal/m3], Indice de Wobbe) de una mezcla dada en fracciones molares.
-
-    Las fracciones se NORMALIZAN antes de calcular: gas_residual_OUT no suma 1
-    (su suma es el rendimiento volumetrico), pero la cromatografia del gas que
-    sale por el ducto si es la normalizada.
-
-        PCS_mezcla = sum(x_i * PCS_i)
-        IW = PCS / sqrt(densidad relativa),  dens_rel = PM_mezcla / PM_aire
-
-    Devuelve (None, None) si `propiedades` no trae una columna de PCS, y
-    (pcs, None) si trae PCS pero no peso molecular. Los graficos del tab
-    degradan solos cuando falta el dato.
-    """
-    if fracciones is None or propiedades is None or not isinstance(propiedades, pd.DataFrame):
-        return None, None
-
-    comp = _a_dict_compuestos(fracciones)
-    if not comp:
-        return None, None
-    x = pd.Series(comp, dtype=float)
-    total = float(x.sum())
-    if total <= 0:
-        return None, None
-    x = x / total
-
-    col_pcs = _col_por_regex(propiedades, r"pcs|poder\s*calor")
-    if col_pcs is None:
-        return None, None
-
-    indice = x.index.intersection(propiedades.index)
-    if len(indice) == 0:
-        return None, None
-    x = x.reindex(indice)
-
-    pcs = float((x * pd.to_numeric(propiedades.loc[indice, col_pcs],
-                                   errors="coerce").fillna(0)).sum())
-
-    iw = None
-    col_pm = _col_por_regex(propiedades, r"peso\s*molecular")
-    if col_pm is not None:
-        pm = float((x * pd.to_numeric(propiedades.loc[indice, col_pm],
-                                      errors="coerce").fillna(0)).sum())
-        dens_rel = pm / _PM_AIRE
-        if dens_rel > 0:
-            iw = pcs / dens_rel ** 0.5
-
-    return pcs, iw
-
-
-# Hook para el punto de rocio de hidrocarburos de la mezcla (grafico "PRHC"
-# de la lamina objetivo). Calcularlo bien requiere un flash con ecuacion de
-# estado; inventar una correlacion aca daria numeros que parecen reales y no
-# lo son. Si el proyecto expone `domain/prhc.py` con
-#
-#     def calcular_prhc(fracciones: pd.Series) -> float   # °C
-#
-# (fracciones molares normalizadas, indexadas por compuesto), la serie lo usa
-# y el grafico aparece solo. Mientras no exista, el tab muestra como activarlo.
-try:
-    from domain.prhc import calcular_prhc
-except ImportError:
-    calcular_prhc = None
-
-
-def _grupo_planta(nombre: str) -> str:
-    """'TTY - TBX' y 'TTY - Dew Point' -> 'TTY'; el resto queda como esta.
-    Es el agrupamiento de la lamina: MEGA / TTY / Directo a gasoducto."""
-    if "TTY" in str(nombre).upper():
-        return "TTY"
-    return str(nombre)
-
-
-def _fila_mezcla(periodo, resultado, propiedades) -> dict:
-    """La corriente que entra al sistema de transporte en un periodo.
-
-    Se compone de:
-      - la SALIDA de cada planta: vol_asignado por la fraccion residual
-        (suma de gas_residual_OUT), con la composicion residual normalizada;
-      - el BYPASS de cada planta, con la composicion del POOL (gas_rico_IN):
-        es gas que no se trato, asi que sale con la cromato de entrada.
-
-    El vol_derivado NO se suma: ya esta contado como disponible del eslabon
-    siguiente (seria contar el mismo gas dos veces).
-
-    La mezcla molar se pondera por volumen y de ahi salen PCS, IW y (si hay
-    hook) el PRHC. El PCS ponderar por volumen es exacto; el IW se calcula
-    sobre la composicion mezclada, no promediando IWs (no es lineal).
-    """
-    ts = pd.Timestamp(periodo).normalize()
-    corrientes = []          # (volumen, Series de fracciones normalizadas)
-    vol_grupos = {}          # 'MEGA' / 'TTY' / 'Directo a gasoducto'
-
-    for nombre_planta, datos in resultado.get("plantas", {}).items():
-        flujos = datos["flujos"]
-        grupo = _grupo_planta(nombre_planta)
-
-        residual = _a_dict_compuestos(datos.get("gas_residual_OUT"))
-        fraccion_residual = sum(residual.values()) if residual else 0.0
-        vol_salida = _a_mm(flujos["vol_asignado"])
-        if residual and fraccion_residual > 0 and vol_salida:
-            vol_salida = vol_salida * fraccion_residual
-            corrientes.append(
-                (vol_salida, pd.Series(residual, dtype=float) / fraccion_residual))
-            vol_grupos[grupo] = vol_grupos.get(grupo, 0.0) + vol_salida
-
-        rico = _a_dict_compuestos(datos.get("gas_rico_IN"))
-        vol_bp = _a_mm(flujos["bypass"])
-        if rico and vol_bp and vol_bp > 0:
-            corrientes.append((vol_bp, pd.Series(rico, dtype=float)))
-            vol_grupos["Directo a gasoducto"] = (
-                vol_grupos.get("Directo a gasoducto", 0.0) + vol_bp)
-
-    fila = {"periodo": ts, "pcs": None, "iw": None, "prhc": None}
-    for grupo, vol in vol_grupos.items():
-        fila[f"vol_{_normalizar_clave(grupo)}"] = vol
-
-    vol_total = sum(v for v, _ in corrientes)
-    if vol_total > 0:
-        mezcla = pd.Series(dtype=float)
-        for vol, x in corrientes:
-            mezcla = mezcla.add(x * (vol / vol_total), fill_value=0.0)
-
-        fila["pcs"], fila["iw"] = _pcs_iw(mezcla, propiedades)
-
-        if calcular_prhc is not None:
-            try:
-                fila["prhc"] = float(calcular_prhc(mezcla))
-            except Exception as e:
-                # Un mes con composicion rara no debe tirar toda la serie.
-                print(f"[serie:{ts:%m-%Y}] calcular_prhc fallo: {e}")
-
-    return fila
-
-
-def _normalizar_clave(texto: str) -> str:
-    import re as _re
-    return _re.sub(r"[^a-z0-9]+", "_", str(texto).lower()).strip("_")
+    return {str(k): float(v) for k, v in serie_comp.items()
+            if pd.notna(v)}
 
 
 def _totales_retenidos(retenidos_vol) -> dict:
@@ -986,14 +1210,11 @@ def _totales_retenidos(retenidos_vol) -> dict:
     return salida
 
 
-def _fila_serie(periodo, nombre_planta: str, datos: dict, propiedades) -> dict:
+def _fila_serie(periodo, nombre_planta: str, datos: dict) -> dict:
     """Aplana el resultado de una planta a una fila. Volumenes ya en MMm3/d."""
     flujos = datos["flujos"]
     cap_evac = datos.get("capacidad_evacuacion")
     lgn = float(flujos["lgn_asignado"])
-
-    pcs_in, iw_in = _pcs_iw(datos.get("gas_rico_IN"), propiedades)
-    pcs_out, iw_out = _pcs_iw(datos.get("gas_residual_OUT"), propiedades)
 
     fila = {
         "periodo": pd.Timestamp(periodo).normalize(),
@@ -1001,12 +1222,11 @@ def _fila_serie(periodo, nombre_planta: str, datos: dict, propiedades) -> dict:
         "activa": bool(flujos.get("activa", True)),
         "lgn_asignado": lgn,
         "lgn_unitario": float(flujos["lgn_unitario"]),
+        # lgn_unitario es tn por unidad de Volumen_inyectado; reescalado a
+        # tn/MMm3 es la "riqueza" del pool, que es la que se lee de un vistazo.
         "lgn_por_mmm3": float(flujos["lgn_unitario"]) * FACTOR_MM,
         "capacidad_evacuacion": None if cap_evac is None else float(cap_evac),
-        "capacidad_ingreso": _a_mm(datos.get("capacidad_ingreso")),
         "ocupacion": (lgn / float(cap_evac) * 100.0) if cap_evac else None,
-        "pcs_in": pcs_in, "pcs_out": pcs_out,
-        "iw_in": iw_in, "iw_out": iw_out,
     }
 
     for col in ["vol_disponible", "vol_maximo", "vol_asignado",
@@ -1019,74 +1239,26 @@ def _fila_serie(periodo, nombre_planta: str, datos: dict, propiedades) -> dict:
     for compuesto, valor in _a_dict_compuestos(datos.get("gas_residual_OUT")).items():
         fila[f"x_{compuesto}"] = valor
 
+    # Propiedades del gas residual (composicion renormalizada), calculadas en
+    # ejecutar_pipeline. Columnas residual_z / residual_densidad / residual_PCS
+    # / residual_IW, una serie por planta para el tab Graphs.
+    for clave, valor in (datos.get("propiedades_residual") or {}).items():
+        fila[f"residual_{clave}"] = float(valor)
+
     for corte, valor in _totales_retenidos(datos.get("retenidos_vol")).items():
         fila[f"lgn_{corte}"] = valor
 
     return fila
 
 
-def _filas_areas(periodo, resultado) -> list:
-    """Detalle (Area, Gasoducto, volumen) de las tres tablas totales."""
-    filas = []
-    ts = pd.Timestamp(periodo).normalize()
-
-    for nombre_tabla, origen in _TABLAS_AREAS.items():
-        tabla = resultado.get("tablas", {}).get(nombre_tabla)
-        if not isinstance(tabla, pd.DataFrame) or tabla.empty:
-            continue
-        if not {"Area", "Volumen_inyectado"}.issubset(tabla.columns):
-            continue
-
-        col_pcs = _col_por_regex(tabla, r"pcs|poder\s*calor")
-        tiene_gasoducto = "Gasoducto" in tabla.columns
-
-        for _, r in tabla.iterrows():
-            pcs = None
-            if col_pcs is not None and pd.notna(r[col_pcs]):
-                try:
-                    pcs = float(r[col_pcs])
-                except (TypeError, ValueError):
-                    pcs = None
-            filas.append({
-                "periodo": ts,
-                "origen": origen,
-                "area": str(r["Area"]),
-                "gasoducto": str(r["Gasoducto"]) if tiene_gasoducto and pd.notna(r["Gasoducto"]) else None,
-                "volumen": _a_mm(r["Volumen_inyectado"]),
-                "pcs": pcs,
-            })
-    return filas
-
-
-def _filas_pool(periodo, resultado) -> list:
-    """Pool de cada planta abierto por Area (para 'Ingreso a planta por area')."""
-    filas = []
-    ts = pd.Timestamp(periodo).normalize()
-
-    for planta, datos in resultado.get("plantas", {}).items():
-        tabla = datos.get("tabla_total")
-        if not isinstance(tabla, pd.DataFrame) or tabla.empty or "Area" not in tabla.columns:
-            continue
-        col_pool = "Volumen_pool" if "Volumen_pool" in tabla.columns else "Volumen_inyectado"
-        for _, r in tabla.iterrows():
-            filas.append({
-                "periodo": ts,
-                "planta": planta,
-                "area": str(r["Area"]),
-                "vol_pool": _a_mm(r.get(col_pool)),
-                "vol_asignado": _a_mm(r.get("Volumen_inyectado")),
-            })
-    return filas
-
-
 def ejecutar_serie(path, params, periodos):
-    """Corre el pipeline mes a mes. Devuelve ({"plantas","areas","pool"}, fallos).
+    """Corre el pipeline mes a mes. Devuelve (serie_larga, fallos).
 
     Un mes que revienta no aborta el barrido: se anota en `fallos` y se sigue.
     Es habitual que falten datos de inyeccion para algun periodo del rango y no
     tiene sentido perder los otros 23 por eso.
     """
-    filas_plantas, filas_areas, filas_pool, filas_mezcla, fallos = [], [], [], [], []
+    filas, fallos = [], []
     barra = st.sidebar.progress(0.0, text="Calculando serie...")
 
     for i, periodo in enumerate(periodos, start=1):
@@ -1103,23 +1275,11 @@ def ejecutar_serie(path, params, periodos):
             fallos.append((periodo, str(e)))
             continue
 
-        propiedades = resultado.get("comunes", {}).get("propiedades")
         for nombre_planta, datos in resultado["plantas"].items():
-            filas_plantas.append(_fila_serie(periodo, nombre_planta, datos, propiedades))
-
-        filas_areas.extend(_filas_areas(periodo, resultado))
-        filas_pool.extend(_filas_pool(periodo, resultado))
-        filas_mezcla.append(_fila_mezcla(periodo, resultado, propiedades))
+            filas.append(_fila_serie(periodo, nombre_planta, datos))
 
     barra.empty()
-    serie = {
-        "plantas": pd.DataFrame(filas_plantas),
-        "areas": pd.DataFrame(filas_areas),
-        "pool": pd.DataFrame(filas_pool),
-        "mezcla": pd.DataFrame(filas_mezcla),
-    }
-    return serie, fallos
-
+    return pd.DataFrame(filas), fallos
 
 
 if run:
@@ -1135,19 +1295,22 @@ if run:
     finally:
         st.session_state["diagnostico"] = registro
 
-if run_serie:
+if run_serie and not periodos_serie:
+    st.sidebar.error("El rango no contiene ningún inicio de mes: no hay nada que correr.")
+
+elif run_serie:
     try:
         # Los `print` del pipeline se capturan y descartan: multiplicados por N
         # meses tapan la consola y el diagnostico util es el de la corrida
         # puntual, que ya se muestra en el tab Resumen.
         with capturar():
-            serie_dict, fallos_serie = ejecutar_serie(input_path, PARAMS, periodos_serie)
-        st.session_state["serie"] = serie_dict
+            serie_df, fallos_serie = ejecutar_serie(input_path, PARAMS, periodos_serie)
+        st.session_state["serie"] = serie_df
         st.session_state["serie_fallos"] = fallos_serie
 
         # Si nunca se corrio el pipeline suelto, el resto de los tabs quedarian
         # vacios aunque la serie este lista. Se siembra con el ultimo periodo.
-        if st.session_state.get("resultados") is None and len(serie_dict["plantas"]):
+        if st.session_state.get("resultados") is None and len(serie_df):
             st.session_state["resultados"] = ejecutar_pipeline(
                 input_path,
                 {**PARAMS, "PERIODO_CONSIDERADO": pd.Timestamp(periodos_serie[-1])},
@@ -1250,7 +1413,7 @@ with tab_red:
     panel_mapa(resultados)
 
 with tab_sandbox:
-    panel_tab_plantas(resultados, PARAMS, FACTOR_MM)
+    panel_tab_plantas(resultados, resultados.get("params_efectivos", PARAMS), FACTOR_MM)
 
 
 def _mostrar_planta(tab, nombre_planta, datos):
