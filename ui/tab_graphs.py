@@ -660,7 +660,11 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
             for periodo, error in fallos:
                 st.write(f"- **{pd.Timestamp(periodo).strftime('%m-%Y')}**: {error}")
 
-    if not serie or not isinstance(serie, dict) or serie.get("plantas") is None \
+    # `isinstance` va PRIMERO: si en session_state quedo una serie del formato
+    # viejo (un DataFrame suelto), `not serie` revienta con "truth value of a
+    # DataFrame is ambiguous" antes de llegar al chequeo de tipo. Con el orden
+    # correcto, una serie vieja simplemente muestra el aviso de recalcular.
+    if not isinstance(serie, dict) or serie.get("plantas") is None \
             or len(serie["plantas"]) == 0:
         _sin_serie(resultados)
         return

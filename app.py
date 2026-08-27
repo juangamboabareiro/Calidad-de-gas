@@ -781,6 +781,93 @@ def _aplicar_ampliaciones(params: dict) -> dict:
     return p
 
 
+def _props_croma(croma, propiedades, compuestos, ctes) -> dict | None:
+    """z/densidad/PCS/IW de UNA composicion (Serie), renormalizada a suma 1.
+
+    Devuelve None si no hay croma valida. Es la misma cuenta de
+    `calcular_propiedades_gas` aplicada a un vector suelto: se usa para el
+    gas rico de entrada de cada planta y para la mezcla a transporte.
+    """
+    if croma is None:
+        return None
+    if isinstance(croma, pd.DataFrame):
+        croma = croma.squeeze()
+    if not isinstance(croma, pd.Series):
+        return None
+    croma = pd.to_numeric(croma.reindex(compuestos), errors="coerce").fillna(0.0)
+    total = float(croma.sum())
+    if total <= 0:
+        return None
+    fila = pd.DataFrame([(croma / total).to_dict()])
+    fila = calcular_propiedades_gas(
+        fila, propiedades, list(compuestos), ctes.PRESION_BASE,
+        ctes.TEMPERATURA_BASE, ctes.CONSTANTE_GAS, ctes.DENSIDAD_AIRE,
+        ctes.CONVERSION)
+    return {k: float(fila.iloc[0][k]) for k in ("z", "densidad", "PCS", "IW")}
+
+
+def _mezcla_a_transporte(plantas, propiedades, compuestos, ctes) -> dict:
+    """La mezcla que efectivamente entra al sistema de transporte.
+
+    Composicion = residual (renormalizado) de cada planta ponderado por su
+    volumen tratado + gas rico bypasseado ponderado por su bypass. El PCS/IW
+    salen de la COMPOSICION mezclada, no de promediar PCSs: promediar indices
+    de Wobbe es incorrecto porque el IW no es lineal en la mezcla (raiz de la
+    densidad en el denominador).
+
+    Volumenes en MMm3/d: vol_tty = tratado por TBX + DP; vol_mega = tratado
+    por MEGA; vol_directo_a_gasoducto = suma de bypasses (gas del pool que
+    ninguna planta trato). Lo derivado NO suma: ya esta contado como
+    disponible del eslabon siguiente.
+    """
+    acumulada = pd.Series(0.0, index=list(compuestos))
+    peso_total = 0.0
+    vol_tty = vol_mega = vol_bypass = 0.0
+
+    def _vector(croma):
+        if isinstance(croma, pd.DataFrame):
+            croma = croma.squeeze()
+        if not isinstance(croma, pd.Series):
+            return None
+        v = pd.to_numeric(croma.reindex(compuestos), errors="coerce").fillna(0.0)
+        s = float(v.sum())
+        return (v / s) if s > 0 else None
+
+    for nombre, datos in plantas.items():
+        flujos = datos.get("flujos", {})
+        asignado = float(flujos.get("vol_asignado", 0.0) or 0.0)
+        bypass = float(flujos.get("bypass", 0.0) or 0.0)
+
+        residual = _vector(datos.get("gas_residual_OUT"))
+        if residual is not None and asignado > 0:
+            acumulada = acumulada + residual * asignado
+            peso_total += asignado
+
+        rico = _vector(datos.get("gas_rico_IN"))
+        if rico is not None and bypass > 0:
+            acumulada = acumulada + rico * bypass
+            peso_total += bypass
+
+        vol_bypass += bypass
+        if "MEGA" in str(nombre).upper():
+            vol_mega += asignado
+        else:
+            vol_tty += asignado
+
+    salida = {
+        "vol_mega": vol_mega / FACTOR_MM,
+        "vol_tty": vol_tty / FACTOR_MM,
+        "vol_directo_a_gasoducto": vol_bypass / FACTOR_MM,
+        "pcs": None, "iw": None,
+    }
+    if peso_total > 0:
+        props = _props_croma(acumulada / peso_total, propiedades, compuestos, ctes)
+        if props:
+            salida["pcs"] = props["PCS"]
+            salida["iw"] = props["IW"]
+    return salida
+
+
 def _propiedades_corrientes(plantas, tabla_total_hubs, propiedades, compuestos,
                             ctes):
     """z, densidad, PCS e IW del gas RESIDUAL de cada planta y del gas de
@@ -1131,6 +1218,15 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
             plantas[fila["Corriente"]]["propiedades_residual"] = {
                 k: float(fila[k]) for k in ("z", "densidad", "PCS", "IW")}
 
+    # Lo mismo para el gas RICO de entrada (pcs_in / iw_in del tab Graphs) y
+    # la mezcla total a transporte (lamina objetivo del dashboard).
+    for datos in plantas.values():
+        datos["propiedades_rico"] = _props_croma(
+            datos.get("gas_rico_IN"), propiedades, ctes.COMPUESTOS, ctes)
+
+    mezcla_transporte = _mezcla_a_transporte(
+        plantas, propiedades, ctes.COMPUESTOS, ctes)
+
     return {
         "tablas": {
             "Total Yacimientos": tabla_total_yacimientos,
@@ -1148,6 +1244,11 @@ def ejecutar_pipeline(path, params, guardar_csvs, silencioso=False) -> dict:
         # Informe del ruteo por hubs: hubs ruteados / sin reparto, mapa
         # area->hub y volumen movido. Lo consume quien quiera (mapa, expander).
         "info_hubs": info_hubs,
+
+        # La mezcla que entra al sistema de transporte (volumenes en
+        # MMm3/d y PCS/IW de la composicion mezclada). La consume la
+        # lamina objetivo del tab Graphs via ejecutar_serie.
+        "mezcla_transporte": mezcla_transporte,
 
         # Para el tab "Plantas (sandbox)". `comunes` son los mismos inputs
         # que ya reciben modelar_TTY y modelar_MEGA (incluida la tabla de hubs
@@ -1245,20 +1346,103 @@ def _fila_serie(periodo, nombre_planta: str, datos: dict) -> dict:
     for clave, valor in (datos.get("propiedades_residual") or {}).items():
         fila[f"residual_{clave}"] = float(valor)
 
+    # Calidad in/out y capacidad de ingreso, como las espera tab_graphs:
+    # entrada = gas rico del pool; salida = residual renormalizado.
+    rico = datos.get("propiedades_rico") or {}
+    residual = datos.get("propiedades_residual") or {}
+    fila["pcs_in"] = rico.get("PCS")
+    fila["iw_in"] = rico.get("IW")
+    fila["pcs_out"] = residual.get("PCS")
+    fila["iw_out"] = residual.get("IW")
+    cap_ing = datos.get("capacidad_ingreso")
+    fila["capacidad_ingreso"] = _a_mm(cap_ing) if cap_ing not in (None, float("inf")) else None
+
     for corte, valor in _totales_retenidos(datos.get("retenidos_vol")).items():
         fila[f"lgn_{corte}"] = valor
 
     return fila
 
 
+_ORIGEN_TABLAS_SERIE = {
+    "Total Yacimientos": "yacimientos",
+    "Total Detalles HUBs": "detalles_hubs",
+    "Total Flujos Directos": "flujos_directos",
+    "Total HUBs (ruteo)": "hubs",
+}
+
+
+def _filas_areas_serie(periodo, resultado) -> list[dict]:
+    """Detalle de inyeccion por (area, gasoducto) para serie["areas"].
+
+    Sale de las tablas totales de la corrida: cada tabla aporta su etiqueta de
+    origen y, si la corrida calculo propiedades, el PCS por fila (que el tab
+    pondera por volumen para la calidad por gasoducto).
+    """
+    filas = []
+    for nombre_tabla, origen in _ORIGEN_TABLAS_SERIE.items():
+        tabla = (resultado.get("tablas") or {}).get(nombre_tabla)
+        if tabla is None or not len(tabla) or "Area" not in tabla.columns:
+            continue
+        for _, f in tabla.iterrows():
+            vol = f.get("Volumen_inyectado")
+            filas.append({
+                "periodo": pd.Timestamp(periodo).normalize(),
+                "origen": origen,
+                "area": f.get("Area"),
+                "gasoducto": f.get("Gasoducto"),
+                "volumen": None if pd.isna(vol) else float(vol) / FACTOR_MM,
+                "pcs": (float(f["PCS"]) if "PCS" in tabla.columns
+                        and pd.notna(f.get("PCS")) else None),
+            })
+    return filas
+
+
+def _filas_pool_serie(periodo, resultado) -> list[dict]:
+    """El pool de cada planta abierto por origen, para serie["pool"].
+
+    `vol_pool` es el gas antes del reparto; `vol_asignado`, la porcion que la
+    planta trata (la tabla de planta ya viene escalada pro-rata).
+    """
+    filas = []
+    for nombre_planta, datos in (resultado.get("plantas") or {}).items():
+        tabla = datos.get("tabla_total")
+        if tabla is None or not len(tabla) or "Area" not in tabla.columns:
+            continue
+        for _, f in tabla.iterrows():
+            pool = f.get("Volumen_pool", f.get("Volumen_inyectado"))
+            asignado = f.get("Volumen_inyectado")
+            filas.append({
+                "periodo": pd.Timestamp(periodo).normalize(),
+                "planta": nombre_planta,
+                "area": f.get("Area"),
+                "vol_pool": None if pd.isna(pool) else float(pool) / FACTOR_MM,
+                "vol_asignado": (None if pd.isna(asignado)
+                                 else float(asignado) / FACTOR_MM),
+            })
+    return filas
+
+
 def ejecutar_serie(path, params, periodos):
-    """Corre el pipeline mes a mes. Devuelve (serie_larga, fallos).
+    """Corre el pipeline mes a mes. Devuelve (serie, fallos).
+
+    `serie` es el dict que consume ui/tab_graphs.panel_graphs:
+      - "plantas": una fila por (periodo, planta) con volumenes, LGN por corte,
+        pcs_in/pcs_out, iw_in/iw_out y capacidades (ver _fila_serie).
+      - "areas": detalle de inyeccion por (area, gasoducto) con origen
+        (yacimientos / detalles_hubs / flujos_directos / hubs) y PCS por fila.
+      - "pool": el pool de cada planta abierto por origen (vol_pool y
+        vol_asignado).
+      - "mezcla": una fila por periodo con vol_mega / vol_tty /
+        vol_directo_a_gasoducto y el PCS/IW de la mezcla a transporte.
+    Todos los volumenes en MMm3/d; PCS/IW en la unidad de Constantes-GAS
+    (con Conversion=4.1868, kcal/m3).
 
     Un mes que revienta no aborta el barrido: se anota en `fallos` y se sigue.
     Es habitual que falten datos de inyeccion para algun periodo del rango y no
     tiene sentido perder los otros 23 por eso.
     """
-    filas, fallos = [], []
+    filas_plantas, filas_areas, filas_pool, filas_mezcla = [], [], [], []
+    fallos = []
     barra = st.sidebar.progress(0.0, text="Calculando serie...")
 
     for i, periodo in enumerate(periodos, start=1):
@@ -1276,10 +1460,23 @@ def ejecutar_serie(path, params, periodos):
             continue
 
         for nombre_planta, datos in resultado["plantas"].items():
-            filas.append(_fila_serie(periodo, nombre_planta, datos))
+            filas_plantas.append(_fila_serie(periodo, nombre_planta, datos))
+
+        filas_areas.extend(_filas_areas_serie(periodo, resultado))
+        filas_pool.extend(_filas_pool_serie(periodo, resultado))
+
+        mezcla = resultado.get("mezcla_transporte") or {}
+        filas_mezcla.append({"periodo": pd.Timestamp(periodo).normalize(),
+                             **mezcla})
 
     barra.empty()
-    return pd.DataFrame(filas), fallos
+    serie = {
+        "plantas": pd.DataFrame(filas_plantas),
+        "areas": pd.DataFrame(filas_areas),
+        "pool": pd.DataFrame(filas_pool),
+        "mezcla": pd.DataFrame(filas_mezcla),
+    }
+    return serie, fallos
 
 
 if run:
