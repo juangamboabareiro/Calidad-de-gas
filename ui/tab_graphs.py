@@ -204,7 +204,10 @@ def _g_inyeccion_tpe(mezcla: pd.DataFrame):
 
 
 def _g_calidad_mezcla(mezcla: pd.DataFrame):
-    if mezcla["pcs"].notna().sum() == 0:
+    # `in columns` primero: una serie armada con meses sin mezcla_transporte
+    # no trae la columna y el acceso directo tiraria KeyError, matando ademas
+    # todos los tabs que se renderizan despues de Graphs.
+    if "pcs" not in mezcla.columns or mezcla["pcs"].notna().sum() == 0:
         st.caption("ℹ️ Sin PCS por compuesto en `propiedades`: se omite "
                    "«Calidad del gas» de la mezcla.")
         return
@@ -222,7 +225,8 @@ def _g_calidad_mezcla(mezcla: pd.DataFrame):
     iw_max = c2.number_input("IW MAX [kcal/m3]", value=13_000.0, step=50.0,
                              key="g_mez_iw_max", help="0 = no mostrar la línea.")
 
-    largo = mezcla.melt(id_vars="periodo", value_vars=["pcs", "iw"],
+    largo = mezcla.melt(id_vars="periodo",
+                        value_vars=[c for c in ("pcs", "iw") if c in mezcla.columns],
                         var_name="serie", value_name="valor").dropna(subset=["valor"])
     largo["serie"] = largo["serie"].map({"pcs": "PCS [kcal/m3]", "iw": "IW"})
 
@@ -486,7 +490,7 @@ def _g_retenidos(plantas_df: pd.DataFrame):
 
 
 def _g_pcs_iw(plantas_df: pd.DataFrame):
-    if plantas_df["pcs_in"].notna().sum() == 0:
+    if "pcs_in" not in plantas_df.columns or plantas_df["pcs_in"].notna().sum() == 0:
         st.caption("ℹ️ No se pudo calcular PCS/IW (la hoja `propiedades` no "
                    "trae una columna de PCS por compuesto): se omite «Calidad "
                    "por planta».")
@@ -528,7 +532,7 @@ def _g_pcs_iw(plantas_df: pd.DataFrame):
         _panel("pcs_in", "pcs_out", "PCS", pcs_max)
     with der:
         st.markdown(f"**{planta} — IW**")
-        if df["iw_in"].notna().sum() == 0:
+        if "iw_in" not in df.columns or df["iw_in"].notna().sum() == 0:
             st.info("Sin peso molecular en `propiedades`: no se puede "
                     "calcular el IW.")
         else:
@@ -590,8 +594,17 @@ def _tabla_resumen_anual(plantas_df: pd.DataFrame):
     d = plantas_df.copy()
     d["año"] = pd.to_datetime(d["periodo"]).dt.year
 
+    # Solo las metricas cuya columna existe: una serie generada por una
+    # version intermedia del pipeline puede no traer pcs/iw y el agg con
+    # labels inexistentes tira KeyError (y mata los tabs posteriores).
+    filas_disponibles = {fila: (col, fmt) for fila, (col, fmt)
+                         in _FILAS_RESUMEN.items() if col in d.columns}
+    if not filas_disponibles:
+        st.info("La serie no trae las métricas del resumen.")
+        return
+
     agg = d.groupby(["planta", "año"]).agg(
-        **{fila: (col, "mean") for fila, (col, _) in _FILAS_RESUMEN.items()})
+        **{fila: (col, "mean") for fila, (col, _) in filas_disponibles.items()})
 
     crudo = agg.T  # filas = métricas, columnas = (planta, año)
     crudo.columns = [f"{p} {a}" for p, a in crudo.columns]
@@ -604,7 +617,7 @@ def _tabla_resumen_anual(plantas_df: pd.DataFrame):
         {
             fila: crudo.loc[fila].map(
                 lambda v, f=formato: "—" if pd.isna(v) else f.format(v))
-            for fila, (_, formato) in _FILAS_RESUMEN.items()
+            for fila, (_, formato) in filas_disponibles.items()
         }
     ).T
     vista.columns = crudo.columns

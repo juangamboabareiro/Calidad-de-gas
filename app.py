@@ -1465,9 +1465,17 @@ def ejecutar_serie(path, params, periodos):
         filas_areas.extend(_filas_areas_serie(periodo, resultado))
         filas_pool.extend(_filas_pool_serie(periodo, resultado))
 
+        # Esquema garantizado: aunque un mes venga sin mezcla_transporte,
+        # la fila lleva todas las columnas (en None). Sin esto, un DataFrame
+        # sin la columna `pcs` revienta _g_calidad_mezcla con KeyError y ese
+        # error mata todos los tabs que se renderizan despues de Graphs.
         mezcla = resultado.get("mezcla_transporte") or {}
-        filas_mezcla.append({"periodo": pd.Timestamp(periodo).normalize(),
-                             **mezcla})
+        filas_mezcla.append({
+            "periodo": pd.Timestamp(periodo).normalize(),
+            "vol_mega": None, "vol_tty": None,
+            "vol_directo_a_gasoducto": None, "pcs": None, "iw": None,
+            **mezcla,
+        })
 
     barra.empty()
     serie = {
