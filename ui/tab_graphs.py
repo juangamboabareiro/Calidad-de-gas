@@ -748,15 +748,13 @@ def _serie_en_9300(serie: dict):
              "mezcla": mezcla}, avisos)
 
 
-def _selector_unidad(serie: dict):
-    """Radio de unidad + conversión. Devuelve (serie_en_unidad, etiqueta)."""
-    unidad = st.radio(
-        "Unidad de volúmenes", [_UNIDAD_9300, _UNIDAD_STD], horizontal=True,
-        key="unidad_volumen",
-        help="STD: metros cúbicos físicos en condiciones estándar. 9.300 kcal: "
-             "metros cúbicos equivalentes en energía (V₉₃₀₀ = V_STD × PCS/9300, "
-             "con el PCS propio de cada corriente), la unidad contractual.")
-    if unidad == _UNIDAD_STD:
+def _selector_unidad(serie: dict, unidad: str | None = None):
+    """Convierte la serie a la unidad global elegida en la sidebar.
+
+    `unidad` llega desde app.py (el selector es uno solo para toda la app);
+    None equivale a STD para no romper llamadas viejas.
+    """
+    if unidad != _UNIDAD_9300:
         st.caption(f"Todos los volúmenes expresados en **{_UNIDAD_STD}**.")
         return serie, _UNIDAD_STD
     convertida, avisos = _serie_en_9300(serie)
@@ -768,7 +766,7 @@ def _selector_unidad(serie: dict):
 
 
 def panel_graphs(resultados: dict, serie: dict | None = None,
-                 fallos: list | None = None):
+                 fallos: list | None = None, unidad: str | None = None):
     if alt is None:
         st.error("Falta `altair`. Instalalo con `pip install altair`.")
         return
@@ -787,7 +785,7 @@ def panel_graphs(resultados: dict, serie: dict | None = None,
         _sin_serie(resultados)
         return
 
-    serie, unidad_volumen = _selector_unidad(serie)
+    serie, unidad_volumen = _selector_unidad(serie, unidad)
 
     plantas_df = serie["plantas"].copy()
     plantas_df["periodo"] = pd.to_datetime(plantas_df["periodo"])

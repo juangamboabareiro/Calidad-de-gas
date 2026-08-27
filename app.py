@@ -101,18 +101,11 @@ from ui.tab_graphs import panel_graphs
 
 
 
-st.set_page_config(page_title="Balance de Gas", layout="wide")
+st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
 
 
 # Unidades: cuántas unidades de Volumen_inyectado hay en 1 MMm3/d.
 FACTOR_MM = float(getattr(config, "FACTOR_MMm3_A_UNIDAD_VOLUMEN", 1000.0))
-
-# Defaults de los inputs de la barra lateral. Viven aca y no en `config` porque
-# son arranques comodos para el panel, no premisas del modelo: config sigue
-# siendo la fuente de verdad para quien corre el pipeline sin la UI.
-DEFAULT_FECHA_PM_TTY_TBX = pd.Timestamp("2028-01-01")
-DEFAULT_SERIE_DESDE = "01-2025"
-DEFAULT_SERIE_HASTA = "12-2030"
 
 # `_actualizar_config_y_recargar` sobrescribe config.PATH_INPUTS con el path de
 # la corrida. Si eso pasa una vez con un archivo subido, el default de disco
@@ -173,7 +166,7 @@ def _boton_descarga(df: pd.DataFrame, nombre: str, key: str):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     st.download_button(
-        f"Descargar {nombre}.csv",
+        f"⬇️ Descargar {nombre}.csv",
         data=csv_buffer.getvalue(),
         file_name=f"{nombre}.csv",
         mime="text/csv",
@@ -228,7 +221,7 @@ def _kpi_planta(nombre_planta: str, datos: dict):
     cap_evac = datos["capacidad_evacuacion"]
 
     if not flujos.get("activa", True):
-        st.info(f"**{nombre_planta}** fuera de servicio en este período "
+        st.info(f"⏸️ **{nombre_planta}** fuera de servicio en este período "
                 f"(anterior a la fecha de PM): el gas pasa directo al siguiente eslabón.")
 
     c1, c2, c3 = st.columns(3)
@@ -244,12 +237,12 @@ def _kpi_planta(nombre_planta: str, datos: dict):
 
     if flujos["sobrante"] > 0:
         st.warning(
-            f"**{nombre_planta}** se llenó: deriva "
+            f"⚠️ **{nombre_planta}** se llenó: deriva "
             f"{_fmt(_a_mm(flujos['vol_derivado']), 2)} MMm3/d y bypasea "
             f"{_fmt(_a_mm(flujos['bypass']), 2)} MMm3/d."
         )
     elif flujos["vol_disponible"] > 0:
-        st.success(f"**{nombre_planta}** trata todo el gas que le llega.")
+        st.success(f"✅ **{nombre_planta}** trata todo el gas que le llega.")
 
 
 
@@ -415,7 +408,7 @@ def _actualizar_config_y_recargar(path, params):
 # Encabezado
 # ===========================================================================
 
-st.title("Balance de Gas — Panel de resultados")
+st.title("🛢️ Balance de Gas — Panel de resultados")
 st.caption("Cascada TTY-TBX → TTY-DP → MEGA, limitada por evacuación de LGN.")
 
 with st.expander("ℹ️ Cómo leer este panel"):
@@ -547,15 +540,15 @@ with st.sidebar.form("parametros", **_form_kwargs):
     st.header("3. Módulo TTY")
     fecha_pm_str = st.text_input(
         "Fecha PM TTY-TBX (MM-YYYY)",
-        value=DEFAULT_FECHA_PM_TTY_TBX.strftime("%m-%Y"),
+        value=config.FECHA_PM_TTY_TBX.strftime("%m-%Y"),
         help="Obligatoria. Antes de esta fecha TTY-TBX no está en servicio y "
              "todo el pool va a TTY-DP.",
     )
     try:
         fecha_pm_ts = pd.Timestamp(fecha_pm_str.replace("/", "-"))
     except Exception:
-        st.error("Formato inválido, se usa el default del panel.")
-        fecha_pm_ts = DEFAULT_FECHA_PM_TTY_TBX
+        st.error("Formato inválido, se usa el default de config.")
+        fecha_pm_ts = config.FECHA_PM_TTY_TBX
 
     tbx_en_servicio = periodo_ts >= fecha_pm_ts
     if tbx_en_servicio:
@@ -632,7 +625,7 @@ with st.sidebar.form("parametros", **_form_kwargs):
     guardar_csvs = st.checkbox("Guardar CSVs en disco al ejecutar", value=False)
 
     run = st.form_submit_button(
-        "Ejecutar pipeline", type="primary", use_container_width=True)
+        "▶️ Ejecutar pipeline", type="primary", use_container_width=True)
 
     st.header("9. Serie temporal")
     st.caption(
@@ -643,11 +636,11 @@ with st.sidebar.form("parametros", **_form_kwargs):
     )
     serie_desde_str = st.text_input(
         "Desde (MM-YYYY)",
-        value=DEFAULT_SERIE_DESDE,
+        value=(periodo_ts - pd.DateOffset(months=11)).strftime("%m-%Y"),
         key="serie_desde",
     )
     serie_hasta_str = st.text_input(
-        "Hasta (MM-YYYY)", value=DEFAULT_SERIE_HASTA, key="serie_hasta")
+        "Hasta (MM-YYYY)", value=periodo_ts.strftime("%m-%Y"), key="serie_hasta")
 
     try:
         serie_desde = pd.Timestamp(serie_desde_str.replace("/", "-")).normalize()
@@ -666,7 +659,7 @@ with st.sidebar.form("parametros", **_form_kwargs):
     # quedaria con el estado del submit anterior. El rango vacio se valida
     # abajo, en el `if run_serie`.
     run_serie = st.form_submit_button(
-        "Calcular serie", use_container_width=True)
+        "📈 Calcular serie", use_container_width=True)
 
 PARAMS = {
     "PERIODO_CONSIDERADO": periodo_ts,
@@ -1579,21 +1572,184 @@ elif run_serie:
 # Resultados
 # ===========================================================================
 
+_REF_9300 = 9_300.0
+UNIDAD_9300 = "MMm³/d de 9.300 kcal"
+UNIDAD_STD = "MMm³/d STD"
+
+
+def construir_vista_9300(resultados: dict):
+    """Copia de `resultados` con TODOS los volúmenes en m³ eq. de 9.300 kcal.
+
+    ES SOLO PRESENTACIÓN: el pipeline calcula la física en STD (el balance
+    molar y la cascada necesitan metros físicos) y esta vista convierte los
+    volúmenes de salida con V_9300 = V_STD × PCS/9300, usando el PCS PROPIO
+    de cada corriente:
+      - tablas totales: el PCS de cada fila;
+      - flujos de planta (disponible/tratado/derivado/bypass/capacidad de
+        ingreso): el PCS del gas rico del pool de esa planta;
+      - mezcla a transporte: su propio PCS;
+      - mapa de la red: el PCS de la fila (Area, Gasoducto) de las tablas.
+    Lo que no es volumen de gas (LGN en tn/d, retenidos, cromas, PCS/IW,
+    capacidad de evacuación) no se toca. Lo que RE-CALCULA física (comunes
+    del sandbox, serie) recibe siempre el original en STD.
+
+    Devuelve (vista, avisos). Si los PCS no están en kcal/m³ (Conversion=1000
+    en Constantes-GAS), no convierte y lo dice: dividir MJ por 9300 daría
+    basura con cara de número.
+    """
+    avisos = []
+
+    # Chequeo de escala con el PCS de las tablas.
+    _pcs_muestra = []
+    for t in (resultados.get("tablas") or {}).values():
+        if t is not None and len(t) and "PCS" in t.columns:
+            _pcs_muestra.append(t["PCS"].dropna())
+    muestra = pd.concat(_pcs_muestra) if _pcs_muestra else pd.Series(dtype=float)
+    if not len(muestra):
+        return resultados, ["Las tablas no traen PCS: no se puede convertir a "
+                            "9.300 (¿corrida vieja en memoria?). Se muestra STD."]
+    if muestra.median() < 1000:
+        return resultados, ["Los PCS no están en kcal/m³ (¿Conversion=1000 en "
+                            "Constantes-GAS?): se muestra STD."]
+
+    vista = dict(resultados)
+
+    # --- Tablas totales: factor por fila ---------------------------------
+    tablas_v = {}
+    for nombre, t in (resultados.get("tablas") or {}).items():
+        if t is None or not len(t) or "Volumen_inyectado" not in t.columns:
+            tablas_v[nombre] = t
+            continue
+        t2 = t.copy()
+        if "PCS" in t2.columns and t2["PCS"].notna().any():
+            f = t2["PCS"] / _REF_9300
+            t2["Volumen_inyectado"] = t2["Volumen_inyectado"] * f
+            for c in t2.columns:
+                if c.startswith("Vol_"):
+                    t2[c] = t2[c] * f
+        else:
+            avisos.append(f"'{nombre}' sin PCS por fila: queda en STD.")
+        tablas_v[nombre] = t2
+    vista["tablas"] = tablas_v
+
+    # --- Plantas: factor = PCS del gas rico del pool ----------------------
+    plantas_v = {}
+    for nombre, datos in (resultados.get("plantas") or {}).items():
+        pcs = (datos.get("propiedades_rico") or {}).get("PCS")
+        if not pcs or pcs < 1000:
+            avisos.append(f"{nombre} sin PCS de gas rico: sus flujos quedan en STD.")
+            plantas_v[nombre] = datos
+            continue
+        f = pcs / _REF_9300
+        d2 = dict(datos)
+
+        flujos = dict(datos.get("flujos") or {})
+        for k in ("vol_disponible", "vol_maximo", "vol_asignado", "sobrante",
+                  "vol_derivado", "bypass"):
+            v = flujos.get(k)
+            if isinstance(v, (int, float)) and v not in (float("inf"),):
+                flujos[k] = v * f
+        if isinstance(flujos.get("derivados"), dict):
+            flujos["derivados"] = {k: v * f for k, v in flujos["derivados"].items()}
+        d2["flujos"] = flujos
+        d2["bypass"] = flujos.get("bypass", datos.get("bypass"))
+
+        for k in ("vol_pool", "capacidad_ingreso", "recibe_de_vol"):
+            v = datos.get(k)
+            if isinstance(v, (int, float)) and v != float("inf"):
+                d2[k] = v * f
+
+        tabla = datos.get("tabla_total")
+        if tabla is not None and len(tabla):
+            t2 = tabla.copy()
+            # Fila a fila si la tabla trae PCS; si no, el factor de la planta
+            # (aprox.: el pool comparte destino, no composicion).
+            ff = (t2["PCS"] / _REF_9300) if "PCS" in t2.columns \
+                and t2["PCS"].notna().any() else f
+            for c in ("Volumen_pool", "Volumen_inyectado"):
+                if c in t2.columns:
+                    t2[c] = t2[c] * ff
+            d2["tabla_total"] = t2
+
+        plantas_v[nombre] = d2
+    vista["plantas"] = plantas_v
+
+    # --- flujos_plantas (KPIs del resumen): factor por planta -------------
+    fp = resultados.get("flujos_plantas")
+    if fp is not None and len(fp):
+        fp2 = fp.copy()
+        for nombre in fp2.index:
+            pcs = ((resultados["plantas"].get(nombre) or {})
+                   .get("propiedades_rico") or {}).get("PCS")
+            if pcs and pcs > 1000:
+                cols = [c for c in ("vol_disponible", "vol_asignado",
+                                    "vol_derivado", "bypass", "vol_maximo",
+                                    "sobrante")
+                        if c in fp2.columns]
+                fp2.loc[nombre, cols] = fp2.loc[nombre, cols] * (pcs / _REF_9300)
+        vista["flujos_plantas"] = fp2
+
+    # --- mezcla a transporte ----------------------------------------------
+    mez = resultados.get("mezcla_transporte")
+    if mez and mez.get("pcs"):
+        f = mez["pcs"] / _REF_9300
+        vista["mezcla_transporte"] = {
+            **mez, **{k: (mez[k] * f if isinstance(mez.get(k), (int, float))
+                          else mez.get(k))
+                      for k in ("vol_mega", "vol_tty", "vol_directo_a_gasoducto")}}
+
+    # --- mapa de la red: PCS por (Area, Gasoducto) desde las tablas -------
+    red = resultados.get("red_gasoductos")
+    if red is not None and len(red) and "Volumen_inyectado" in red.columns:
+        pares = []
+        for t in (resultados.get("tablas") or {}).values():
+            if t is not None and len(t) and "PCS" in getattr(t, "columns", ()):
+                pares.append(t[["Area", "Gasoducto", "PCS"]])
+        if pares:
+            lookup = (pd.concat(pares).dropna(subset=["PCS"])
+                      .drop_duplicates(["Area", "Gasoducto"]))
+            red2 = red.merge(lookup, on=["Area", "Gasoducto"], how="left")
+            factor = (red2["PCS"] / _REF_9300).fillna(1.0)
+            red2["Volumen_inyectado"] = red2["Volumen_inyectado"] * factor
+            vista["red_gasoductos"] = red2.drop(columns=["PCS"])
+
+    return vista, avisos
+
+
 resultados = st.session_state.get("resultados")
 
 if resultados is None:
-    st.info("Elegí los parámetros en la barra lateral y apretá **Ejecutar pipeline**.")
+    st.info("Elegí los parámetros en la barra lateral y apretá **▶️ Ejecutar pipeline**.")
     st.stop()
+
+# ---------------------------------------------------------------------------
+# Unidad de los volúmenes de TODA la app (fuera del form: cambia al instante,
+# sin recorrer el pipeline, porque es pura conversión de presentación).
+# ---------------------------------------------------------------------------
+unidad_volumen = st.sidebar.radio(
+    "🧭 Unidad de volúmenes", [UNIDAD_9300, UNIDAD_STD], index=0,
+    key="unidad_volumen_global",
+    help="Aplica a KPIs, tabs de plantas, tablas, mapa y Graphs. STD: metros "
+         "cúbicos físicos. 9.300: equivalentes en energía (V₉₃₀₀ = V_STD × "
+         "PCS/9300, con el PCS propio de cada corriente). El sandbox re-modela "
+         "la física y trabaja siempre en STD.")
+
+# El original en STD queda para lo que RE-CALCULA: sandbox (comunes) y serie.
+resultados_fisicos = resultados
+if unidad_volumen == UNIDAD_9300:
+    resultados, _avisos_unidad = construir_vista_9300(resultados)
+    for _a in _avisos_unidad:
+        st.sidebar.warning(_a)
+st.sidebar.caption(f"Mostrando volúmenes en **{unidad_volumen}**.")
 
 plantas = resultados["plantas"]
 flujos_plantas = resultados["flujos_plantas"]
 tbx_en_servicio_res = resultados["tbx_en_servicio"]
 
-(tab_resumen, tab_graphs, tab_red, tab_tbx, tab_dp, tab_mega,
- tab_sandbox, tab_cascada, tab_tablas) = st.tabs(
-    ["Resumen", "Graphs", "Mapa de la red",
-     "TTY - TBX", "TTY - Dew Point", "MEGA", "Plantas (sandbox)",
-     "Cascada", "Tablas totales"]
+(tab_resumen, tab_graphs, tab_cascada, tab_tablas, tab_red,
+ tab_tbx, tab_dp, tab_mega, tab_sandbox) = st.tabs(
+    ["📊 Resumen", "📈 Graphs", "🔗 Cascada", "📋 Tablas totales", "🗺️ Mapa de la red",
+     "TTY - TBX", "TTY - Dew Point", "MEGA", "Plantas (sandbox)"]
 )
 
 with tab_resumen:
@@ -1602,8 +1758,8 @@ with tab_resumen:
     # y los KPI). El contador en el título deja ver si hay algo sin abrirlo.
     _obs = st.session_state.get("diagnostico", [])
     with st.expander(
-        f"Calidad de los datos de entrada — {len(_obs)} observación(es)"
-        if _obs else "Calidad de los datos de entrada — sin observaciones",
+        f"🔍 Calidad de los datos de entrada — {len(_obs)} observación(es)"
+        if _obs else "🔍 Calidad de los datos de entrada — sin observaciones",
         expanded=False,
     ):
         mostrar_diagnostico(_obs)
@@ -1672,7 +1828,8 @@ def _render_seguro(nombre_tab: str, fn, *args, **kwargs):
 with tab_graphs:
     _render_seguro("Graphs", panel_graphs, resultados,
                    serie=st.session_state.get("serie"),
-                   fallos=st.session_state.get("serie_fallos"))
+                   fallos=st.session_state.get("serie_fallos"),
+                   unidad=unidad_volumen)
 
 with tab_tablas:
     _render_seguro("Tablas totales", panel_tablas, resultados)
@@ -1681,8 +1838,11 @@ with tab_red:
     _render_seguro("Mapa de la red", panel_mapa, resultados)
 
 with tab_sandbox:
-    _render_seguro("Plantas (sandbox)", panel_tab_plantas, resultados,
-                   resultados.get("params_efectivos", PARAMS), FACTOR_MM)
+    # El sandbox RE-MODELA la fisica desde comunes: necesita el original STD.
+    st.caption("El sandbox re-modela la física y trabaja siempre en "
+               "**MMm³/d STD**, independiente del selector de unidad.")
+    _render_seguro("Plantas (sandbox)", panel_tab_plantas, resultados_fisicos,
+                   resultados_fisicos.get("params_efectivos", PARAMS), FACTOR_MM)
 
 
 def _mostrar_planta_contenido(nombre_planta, datos):
