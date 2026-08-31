@@ -101,7 +101,8 @@ from ui.tab_graphs import panel_graphs
 
 
 
-st.set_page_config(page_title="Balance de Gas", page_icon="🛢️", layout="wide")
+st.set_page_config(page_title="Balance de Gas", page_icon="🛢️",  # emoji-ok: favicon
+                   layout="wide")
 
 
 # Unidades: cuántas unidades de Volumen_inyectado hay en 1 MMm3/d.
@@ -166,7 +167,7 @@ def _boton_descarga(df: pd.DataFrame, nombre: str, key: str):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     st.download_button(
-        f"⬇️ Descargar {nombre}.csv",
+        f"Descargar {nombre}.csv",
         data=csv_buffer.getvalue(),
         file_name=f"{nombre}.csv",
         mime="text/csv",
@@ -221,7 +222,7 @@ def _kpi_planta(nombre_planta: str, datos: dict):
     cap_evac = datos["capacidad_evacuacion"]
 
     if not flujos.get("activa", True):
-        st.info(f"⏸️ **{nombre_planta}** fuera de servicio en este período "
+        st.info(f"**{nombre_planta}** fuera de servicio en este período "
                 f"(anterior a la fecha de PM): el gas pasa directo al siguiente eslabón.")
 
     c1, c2, c3 = st.columns(3)
@@ -408,7 +409,7 @@ def _actualizar_config_y_recargar(path, params):
 # Encabezado
 # ===========================================================================
 
-st.title("🛢️ Balance de Gas — Panel de resultados")
+st.title("Balance de Gas — Panel de resultados")
 st.caption("Cascada TTY-TBX → TTY-DP → MEGA, limitada por evacuación de LGN.")
 
 with st.expander("ℹ️ Cómo leer este panel"):
@@ -625,7 +626,7 @@ with st.sidebar.form("parametros", **_form_kwargs):
     guardar_csvs = st.checkbox("Guardar CSVs en disco al ejecutar", value=False)
 
     run = st.form_submit_button(
-        "▶️ Ejecutar pipeline", type="primary", use_container_width=True)
+        "Ejecutar pipeline", type="primary", use_container_width=True)
 
     st.header("9. Serie temporal")
     st.caption(
@@ -659,7 +660,7 @@ with st.sidebar.form("parametros", **_form_kwargs):
     # quedaria con el estado del submit anterior. El rango vacio se valida
     # abajo, en el `if run_serie`.
     run_serie = st.form_submit_button(
-        "📈 Calcular serie", use_container_width=True)
+        "Calcular serie", use_container_width=True)
 
 PARAMS = {
     "PERIODO_CONSIDERADO": periodo_ts,
@@ -1719,7 +1720,7 @@ def construir_vista_9300(resultados: dict):
 resultados = st.session_state.get("resultados")
 
 if resultados is None:
-    st.info("Elegí los parámetros en la barra lateral y apretá **▶️ Ejecutar pipeline**.")
+    st.info("Elegí los parámetros en la barra lateral y apretá **Ejecutar pipeline**.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -1727,7 +1728,7 @@ if resultados is None:
 # sin recorrer el pipeline, porque es pura conversión de presentación).
 # ---------------------------------------------------------------------------
 unidad_volumen = st.sidebar.radio(
-    "🧭 Unidad de volúmenes", [UNIDAD_9300, UNIDAD_STD], index=0,
+    "Unidad de volúmenes", [UNIDAD_9300, UNIDAD_STD], index=0,
     key="unidad_volumen_global",
     help="Aplica a KPIs, tabs de plantas, tablas, mapa y Graphs. STD: metros "
          "cúbicos físicos. 9.300: equivalentes en energía (V₉₃₀₀ = V_STD × "
@@ -1748,7 +1749,7 @@ tbx_en_servicio_res = resultados["tbx_en_servicio"]
 
 (tab_resumen, tab_graphs, tab_cascada, tab_tablas, tab_red,
  tab_tbx, tab_dp, tab_mega, tab_sandbox) = st.tabs(
-    ["📊 Resumen", "📈 Graphs", "🔗 Cascada", "📋 Tablas totales", "🗺️ Mapa de la red",
+    ["Resumen", "Graphs", "Cascada", "Tablas totales", "Mapa de la red",
      "TTY - TBX", "TTY - Dew Point", "MEGA", "Plantas (sandbox)"]
 )
 
@@ -1758,8 +1759,8 @@ with tab_resumen:
     # y los KPI). El contador en el título deja ver si hay algo sin abrirlo.
     _obs = st.session_state.get("diagnostico", [])
     with st.expander(
-        f"🔍 Calidad de los datos de entrada — {len(_obs)} observación(es)"
-        if _obs else "🔍 Calidad de los datos de entrada — sin observaciones",
+        f"Calidad de los datos de entrada — {len(_obs)} observación(es)"
+        if _obs else "Calidad de los datos de entrada — sin observaciones",
         expanded=False,
     ):
         mostrar_diagnostico(_obs)
